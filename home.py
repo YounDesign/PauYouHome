@@ -3,8 +3,6 @@ import sqlite3
 import pandas as pd
 from datetime import date, datetime
 import re
-import plotly.express as px
-import plotly.graph_objects as go
 
 try:
     import pdfplumber
@@ -85,7 +83,6 @@ def init_db():
         frais_divers REAL DEFAULT 0
     )""")
     
-    # Migration sécurisée pour les bases existantes
     existing_columns = [col["name"] for col in c.execute("PRAGMA table_info(devis)").fetchall()]
     if "project_id" not in existing_columns:
         c.execute("ALTER TABLE devis ADD COLUMN project_id INTEGER")
@@ -186,7 +183,7 @@ def list_contacts(project_id):
     return rows
 
 # ----------------------------------------------------------------------------
-# ANALYSE ET EXTRACTION INTELLIGENTE DU FICHIER
+# ANALYSE ET EXTRACTION INTELLIGENTE DU FICHIER (PDF / EXCEL)
 # ----------------------------------------------------------------------------
 
 def parse_file_data(file_bytes, file_name):
@@ -200,6 +197,29 @@ def parse_file_data(file_bytes, file_name):
         try:
             with pdfplumber.open(_io.BytesIO(file_bytes)) as pdf:
                 for page in pdf.pages:
+                    # Extraction structurée par tableaux si possible
+                    tables = page.extract_tables()
+                    for table in tables:
+                        for row in table:
+                            # Nettoyer les cellules vides
+                            cells = [str(c).strip() for c in row if c is not None and str(c).strip() != ""]
+                            if len(cells) >= 2:
+                                # Chercher si l'une des cellules ressemble à un montant
+                                last_cell = cells[-1].replace(" ", "").replace("\xa0", "").replace("€", "").replace(",", ".")
+                                try:
+                                    val_prix = float(last_cell)
+                                    if val_prix > 0 and val_prix < 500000:
+                                        desc = " - ".join(cells[:-1])
+                                        if len(desc) > 2 and not any(kw in desc.lower() for kw in ["total", "tva", "net à payer"]):
+                                            lignes.append({
+                                                "designation": desc,
+                                                "quantite": 1.0,
+                                                "prix_unitaire": val_prix,
+                                                "montant_total": val_prix
+                                            })
+                                except ValueError:
+                                    pass
+
                     t = page.extract_text() or ""
                     text_all += t + "\n"
         except Exception:
@@ -228,6 +248,31 @@ def parse_file_data(file_bytes, file_name):
         except Exception:
             pass
 
+    # Si aucune ligne n'a été trouvée via les tableaux, analyse textuelle améliorée ligne par ligne
+    if not lignes and text_all:
+        for ligne in text_all.split("\n"):
+            ligne_str = ligne.strip()
+            # Chercher un montant en fin de ligne (ex: 1 250,00 ou 450.00 €)
+            matches = re.findall(r"(\d{1,3}(?:[ \xA0]\d{3})*[.,]\d{2})\s*(?:€)?$", ligne_str)
+            if matches:
+                prix_str = matches[-1].replace(" ", "").replace("\xa0", "").replace(",", ".")
+                try:
+                    p_val = float(prix_str)
+                    # Exclure les lignes de totaux globaux
+                    if not any(kw in ligne_str.lower() for kw in ["total", "tva", "net à payer", "acompte", "solde"]):
+                        designation = ligne_str[:ligne_str.rfind(matches[-1])].strip()
+                        designation = re.sub(r"^[-\u2010-\u2015\d\.\)]+\s*", "", designation).strip()
+                        if len(designation) > 3:
+                            lignes.append({
+                                "designation": designation,
+                                "quantite": 1.0,
+                                "prix_unitaire": p_val,
+                                "montant_total": p_val
+                            })
+                except ValueError:
+                    pass
+
+    # Extraction du montant TTC global
     candidates = re.findall(
         r"(?:total\s*t\.?t\.?c\.?|net\s*à\s*payer)\D{0,15}([\d\s]{1,3}(?:[\d\s]{3})*[.,]\d{2})",
         text_all, flags=re.IGNORECASE,
@@ -241,6 +286,7 @@ def parse_file_data(file_bytes, file_name):
         except ValueError:
             amount = None
 
+    # Extraction des coordonnées
     match_tel = re.search(r"(?:tel|tél|t[ée]l\s*[:\.]?)\s*([\d\s\.\-\/\+]{8,})", text_all, re.IGNORECASE)
     if match_tel:
         contact_info["tel"] = match_tel.group(1).strip()
@@ -256,26 +302,6 @@ def parse_file_data(file_bytes, file_name):
     match_nom = re.search(r"([A-Z\s]{4,}\s(?:MACONNERIE|BTP|ENTREPRISE|SARL|SAS))", text_all)
     if match_nom:
         contact_info["nom"] = match_nom.group(1).strip()
-
-    if file_name.endswith('.pdf') and not lignes:
-        for ligne in text_all.split("\n"):
-            match_prix = re.search(r"([\d\s]{1,3}(?:[\d\s]{3})*[.,]\d{2})\s*(?:€)?$", ligne)
-            if match_prix and len(ligne.strip()) > 8:
-                prix_str = match_prix.group(1).replace(" ", "").replace("\xa0", "").replace(",", ".")
-                try:
-                    p_val = float(prix_str)
-                    if amount is None or p_val != amount:
-                        designation = ligne[:match_prix.start()].strip()
-                        designation = re.sub(r"^[-\u2010-\u2015]\s*", "", designation).strip()
-                        if designation:
-                            lignes.append({
-                                "designation": designation,
-                                "quantite": 1.0,
-                                "prix_unitaire": p_val,
-                                "montant_total": p_val
-                            })
-                except ValueError:
-                    pass
 
     return amount, text_all, lignes, contact_info
 
@@ -422,6 +448,10 @@ with tab_devis:
         montant_detecte, _, lignes_extraites, contact_detecte = parse_file_data(uploaded_file.getvalue(), uploaded_file.name)
         if montant_detecte:
             st.info(f"Montant TTC détecté : {montant_detecte:,.2f} € | Entreprise : {contact_detecte.get('nom')}")
+        if lignes_extraites:
+            st.success(f"🔍 {len(lignes_extraites)} ligne(s) de travaux détectée(s) automatiquement !")
+        else:
+            st.warning("⚠️ Aucune ligne détaillée n'a pu être isolée automatiquement. Une ligne globale sera créée, vous pourrez l'ajuster.")
 
     with st.form("form_devis", clear_on_submit=True):
         col1, col2 = st.columns(2)
