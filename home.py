@@ -670,26 +670,30 @@ with tab_devis:
                     update_devis_categorie(d["id"], selected_cat)
                     st.rerun()
 
-                # Modification du nom de l'entreprise en direct
-                nouveau_nom_entreprise = c1.text_input("Nom entreprise", value=d["nom_entreprise"] or "", key=f"input_nom_ent_{d['id']}")
-                if nouveau_nom_entreprise != (d["nom_entreprise"] or ""):
-                    if d["contact_id"]:
-                        update_contact_name(d["contact_id"], nouveau_nom_entreprise)
-                    else:
-                        cid = save_or_get_contact(current_pid, nouveau_nom_entreprise, "", "", "", "")
-                        conn = get_conn()
-                        conn.execute("UPDATE devis SET contact_id=? WHERE id=?", (cid, d["id"]))
-                        conn.commit()
-                        conn.close()
-                    st.rerun()
-
-                # Modification de la description générale en direct
-                nouvelle_desc = c1.text_input("Description générale", value=d["description"] or "", key=f"input_desc_{d['id']}")
-                if nouvelle_desc != (d["description"] or ""):
-                    update_devis_description(d["id"], nouvelle_desc)
-                    st.rerun()
+                # Formulaire d'édition rapide pour chaque devis (Entreprise & Description)
+                with c1.expander("✏️ Modifier nom / description"):
+                    with st.form(key=f"form_edit_meta_{d['id']}"):
+                        edit_nom_ent = st.text_input("Nom de l'entreprise", value=d["nom_entreprise"] or "")
+                        edit_desc = st.text_input("Description générale", value=d["description"] or "")
+                        if st.form_submit_button("Enregistrer les modifications"):
+                            # Mise à jour du nom de l'entreprise et de la table contacts
+                            if d["contact_id"]:
+                                update_contact_name(d["contact_id"], edit_nom_ent)
+                            else:
+                                cid = save_or_get_contact(current_pid, edit_nom_ent, "", "", "", "")
+                                conn = get_conn()
+                                conn.execute("UPDATE devis SET contact_id=? WHERE id=?", (cid, d["id"]))
+                                conn.commit()
+                                conn.close()
+                            
+                            # Mise à jour de la description générale
+                            update_devis_description(d["id"], edit_desc)
+                            st.success("Modifications enregistrées !")
+                            st.rerun()
 
                 c1.caption(f"📁 Fichier : {d['pdf_nom'] or 'Aucun'}")
+                c1.caption(f"🏢 **{d['nom_entreprise'] or 'Artisan / Fournisseur'}**")
+                c1.caption(f"📝 *{d['description'] or 'Sans description'}*")
                 
                 lignes = list_lignes_devis(d["id"])
                 tot_ht_devis = sum(l["montant_ht"] for l in lignes if l["inclus"] == 1) if lignes else (d["montant_ht"] if d["inclus"]==1 else 0)
