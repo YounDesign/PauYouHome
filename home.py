@@ -1,4 +1,3 @@
-```python
 import streamlit as st
 import sqlite3
 import pandas as pd
@@ -687,5 +686,3 @@ with tab_dashboard:
         values=[project["prix_achat"], frais_notaire_eur, total_travaux],
     )])
     st.plotly_chart(fig, use_container_width=True)
-
-```
