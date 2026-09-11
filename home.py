@@ -209,6 +209,17 @@ def list_contacts(project_id):
     conn.close()
     return rows
 
+def get_project_categories(project_id):
+    defaults = ["Gros œuvre", "Extension", "Cuisine", "Salle de bain", "Électricité", "Plomberie", "Toiture", "Isolation", "Menuiserie", "Peinture / finitions", "Autre"]
+    conn = get_conn()
+    rows = conn.execute("SELECT DISTINCT categorie FROM devis WHERE project_id=? AND categorie IS NOT NULL", (project_id,)).fetchall()
+    conn.close()
+    cats = list(defaults)
+    for r in rows:
+        if r["categorie"] and r["categorie"] not in cats:
+            cats.append(r["categorie"])
+    return cats
+
 # ----------------------------------------------------------------------------
 # ANALYSE ET EXTRACTION INTELLIGENTE DU FICHIER
 # ----------------------------------------------------------------------------
@@ -410,6 +421,13 @@ def update_devis_statut(devis_id, statut):
     conn.close()
 
 
+def update_devis_categorie(devis_id, categorie):
+    conn = get_conn()
+    conn.execute("UPDATE devis SET categorie=? WHERE id=?", (categorie, devis_id))
+    conn.commit()
+    conn.close()
+
+
 def update_devis_inclus(devis_id, inclus):
     conn = get_conn()
     conn.execute("UPDATE devis SET inclus=? WHERE id=?", (1 if inclus else 0, devis_id))
@@ -514,6 +532,7 @@ if not current_pid:
     st.stop()
 
 project = get_project(current_pid)
+available_categories = get_project_categories(current_pid)
 
 tab_achat, tab_devis, tab_contacts, tab_dashboard = st.tabs(["🏡 Achat", "🧾 Devis & Lignes", "📇 Contacts", "📊 Dashboard"])
 
@@ -546,12 +565,16 @@ with tab_devis:
         if lignes_extraites:
             st.success(f"🔍 {len(lignes_extraites)} ligne(s) détectée(s) automatiquement.")
         else:
-            st.warning("⚠️ Aucune ligne détectée automatiquement. Ajoutez-les manuellement via l'affichage du PDF.")
+            st.warning("⚠️ Aucune ligne détectée automatiquement. Ajoutez-les manuellement.")
 
     with st.form("form_devis", clear_on_submit=True):
         col1, col2 = st.columns(2)
         with col1:
-            categorie = st.selectbox("Catégorie", ["Gros œuvre", "Extension", "Cuisine", "Salle de bain", "Électricité", "Plomberie", "Toiture", "Isolation", "Menuiserie", "Peinture / finitions", "Autre"])
+            choix_cat = st.selectbox("Catégorie", available_categories + ["➕ Ajouter une nouvelle catégorie..."])
+            nouvelle_cat = ""
+            if choix_cat == "➕ Ajouter une nouvelle catégorie...":
+                nouvelle_cat = st.text_input("Nom de la nouvelle catégorie")
+            
             description = st.text_input("Description générale", value=uploaded_file.name if uploaded_file else "")
             nom_artisan = st.text_input("Nom de l'entreprise", value=contact_detecte.get("nom", ""))
         with col2:
@@ -564,6 +587,10 @@ with tab_devis:
         montant_ttc_saisi = col_m2.number_input("Montant TTC global (€)", min_value=0.0, step=100.0, value=float(montant_ttc_detecte) if montant_ttc_detecte else 0.0)
 
         if st.form_submit_button("Enregistrer le devis"):
+            cat_finale = nouvelle_cat.strip() if choix_cat == "➕ Ajouter une nouvelle catégorie..." and nouvelle_cat.strip() else choix_cat
+            if cat_finale == "➕ Ajouter une nouvelle catégorie...":
+                cat_finale = "Autre"
+
             pdf_bytes = uploaded_file.getvalue() if uploaded_file is not None else None
             pdf_nom = uploaded_file.name if uploaded_file is not None else None
             
@@ -588,7 +615,7 @@ with tab_devis:
                     "taux_tva": taux_tva_global
                 }]
             
-            add_devis(current_pid, cid, categorie, description, montant_ht_saisi, montant_ttc_saisi, taux_tva_global, statut, valeur_ajoutee, pdf_nom, pdf_bytes, lignes_a_sauver)
+            add_devis(current_pid, cid, cat_finale, description, montant_ht_saisi, montant_ttc_saisi, taux_tva_global, statut, valeur_ajoutee, pdf_nom, pdf_bytes, lignes_a_sauver)
             st.success("Enregistré avec succès !")
             st.rerun()
 
@@ -608,13 +635,33 @@ with tab_devis:
                     update_devis_inclus(d["id"], inclus_devis)
                     st.rerun()
 
-                c1.write(f"**[{d['categorie']}]** {d['nom_entreprise']} \n\n*({d['pdf_nom'] or 'Sans fichier'})*")
+                # Modification de la catégorie en direct
+                all_cats = get_project_categories(current_pid)
+                current_cat_idx = all_cats.index(d["categorie"]) if d["categorie"] in all_cats else 0
+                
+                selected_cat = c1.selectbox(
+                    "Catégorie", 
+                    all_cats + ["➕ Autre..."], 
+                    index=current_cat_idx if d["categorie"] in all_cats else 0, 
+                    key=f"cat_select_{d['id']}",
+                    label_visibility="collapsed"
+                )
+                if selected_cat == "➕ Autre...":
+                    new_c_input = c1.text_input("Nouvelle catégorie", key=f"new_cat_input_{d['id']}")
+                    if new_c_input and new_c_input != d["categorie"]:
+                        update_devis_categorie(d["id"], new_c_input)
+                        st.rerun()
+                elif selected_cat != d["categorie"]:
+                    update_devis_categorie(d["id"], selected_cat)
+                    st.rerun()
+
+                c1.write(f"🏢 **{d['nom_entreprise']}** \n\n*({d['pdf_nom'] or 'Sans fichier'})*")
                 
                 lignes = list_lignes_devis(d["id"])
-                tot_ht = sum(l["montant_ht"] for l in lignes if l["inclus"] == 1) if lignes else d["montant_ht"]
-                tot_ttc = sum(l["montant_ttc"] for l in lignes if l["inclus"] == 1) if lignes else d["montant_ttc"]
+                tot_ht_devis = sum(l["montant_ht"] for l in lignes if l["inclus"] == 1) if lignes else (d["montant_ht"] if d["inclus"]==1 else 0)
+                tot_ttc_devis = sum(l["montant_ttc"] for l in lignes if l["inclus"] == 1) if lignes else (d["montant_ttc"] if d["inclus"]==1 else 0)
                 
-                c2.write(f"HT : **{tot_ht:,.2f} €**\nTTC : **{tot_ttc:,.2f} €**")
+                c2.markdown(f"**Sous-total Devis**\n- HT : **{tot_ht_devis:,.2f} €**\n- TTC : **{tot_ttc_devis:,.2f} €**")
                 
                 nouveau_statut = c3.selectbox("Statut", ["Devis reçu", "Devis signé", "En cours", "Terminé / payé"], index=["Devis reçu", "Devis signé", "En cours", "Terminé / payé"].index(d["statut"]) if d["statut"] in ["Devis reçu", "Devis signé", "En cours", "Terminé / payé"] else 0, key=f"statut_{d['id']}", label_visibility="collapsed")
                 if nouveau_statut != d["statut"]:
