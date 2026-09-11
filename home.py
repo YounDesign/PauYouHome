@@ -775,7 +775,7 @@ with tab_dashboard:
 
     with col_d2:
         st.markdown("### 🏦 Détail du Financement & Prêt")
-        st.write(- **Investissement total (hors crédit)**: f"{investissement_total:,.2f} €")
+        st.write(f"- **Investissement total (hors crédit)** : {investissement_total:,.2f} €")
         st.write(f"- **Apport personnel** : {apport:,.2f} €")
         st.write(f"- **Montant emprunté** : {montant_emprunt:,.2f} €")
         st.write(f"- **Durée du prêt** : {duree_ans} ans ({nb_mois} mois)")
