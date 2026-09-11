@@ -183,7 +183,7 @@ def list_contacts(project_id):
     return rows
 
 # ----------------------------------------------------------------------------
-# ANALYSE ET EXTRACTION INTELLIGENTE DU FICHIER (PDF / EXCEL)
+# ANALYSE ET EXTRACTION INTELLIGENTE DU FICHIER
 # ----------------------------------------------------------------------------
 
 def parse_file_data(file_bytes, file_name):
@@ -197,14 +197,11 @@ def parse_file_data(file_bytes, file_name):
         try:
             with pdfplumber.open(_io.BytesIO(file_bytes)) as pdf:
                 for page in pdf.pages:
-                    # Extraction structurée par tableaux si possible
                     tables = page.extract_tables()
                     for table in tables:
                         for row in table:
-                            # Nettoyer les cellules vides
                             cells = [str(c).strip() for c in row if c is not None and str(c).strip() != ""]
                             if len(cells) >= 2:
-                                # Chercher si l'une des cellules ressemble à un montant
                                 last_cell = cells[-1].replace(" ", "").replace("\xa0", "").replace("€", "").replace(",", ".")
                                 try:
                                     val_prix = float(last_cell)
@@ -219,7 +216,6 @@ def parse_file_data(file_bytes, file_name):
                                             })
                                 except ValueError:
                                     pass
-
                     t = page.extract_text() or ""
                     text_all += t + "\n"
         except Exception:
@@ -248,17 +244,14 @@ def parse_file_data(file_bytes, file_name):
         except Exception:
             pass
 
-    # Si aucune ligne n'a été trouvée via les tableaux, analyse textuelle améliorée ligne par ligne
     if not lignes and text_all:
         for ligne in text_all.split("\n"):
             ligne_str = ligne.strip()
-            # Chercher un montant en fin de ligne (ex: 1 250,00 ou 450.00 €)
             matches = re.findall(r"(\d{1,3}(?:[ \xA0]\d{3})*[.,]\d{2})\s*(?:€)?$", ligne_str)
             if matches:
                 prix_str = matches[-1].replace(" ", "").replace("\xa0", "").replace(",", ".")
                 try:
                     p_val = float(prix_str)
-                    # Exclure les lignes de totaux globaux
                     if not any(kw in ligne_str.lower() for kw in ["total", "tva", "net à payer", "acompte", "solde"]):
                         designation = ligne_str[:ligne_str.rfind(matches[-1])].strip()
                         designation = re.sub(r"^[-\u2010-\u2015\d\.\)]+\s*", "", designation).strip()
@@ -272,7 +265,6 @@ def parse_file_data(file_bytes, file_name):
                 except ValueError:
                     pass
 
-    # Extraction du montant TTC global
     candidates = re.findall(
         r"(?:total\s*t\.?t\.?c\.?|net\s*à\s*payer)\D{0,15}([\d\s]{1,3}(?:[\d\s]{3})*[.,]\d{2})",
         text_all, flags=re.IGNORECASE,
@@ -286,7 +278,6 @@ def parse_file_data(file_bytes, file_name):
         except ValueError:
             amount = None
 
-    # Extraction des coordonnées
     match_tel = re.search(r"(?:tel|tél|t[ée]l\s*[:\.]?)\s*([\d\s\.\-\/\+]{8,})", text_all, re.IGNORECASE)
     if match_tel:
         contact_info["tel"] = match_tel.group(1).strip()
@@ -370,6 +361,25 @@ def update_ligne_inclus(ligne_id, inclus):
     conn.close()
 
 
+def add_ligne_devis(devis_id, designation, quantite, prix_unitaire):
+    conn = get_conn()
+    montant_total = quantite * prix_unitaire
+    conn.execute(
+        """INSERT INTO devis_lignes (devis_id, designation, quantite, prix_unitaire, montant_total, inclus)
+           VALUES (?, ?, ?, ?, ?, 1)""",
+        (devis_id, designation, quantite, prix_unitaire, montant_total)
+    )
+    conn.commit()
+    conn.close()
+
+
+def delete_ligne_devis(ligne_id):
+    conn = get_conn()
+    conn.execute("DELETE FROM devis_lignes WHERE id=?", (ligne_id,))
+    conn.commit()
+    conn.close()
+
+
 def get_total_travaux_valides(pid):
     devis_rows = list_devis(pid)
     total = 0.0
@@ -449,9 +459,9 @@ with tab_devis:
         if montant_detecte:
             st.info(f"Montant TTC détecté : {montant_detecte:,.2f} € | Entreprise : {contact_detecte.get('nom')}")
         if lignes_extraites:
-            st.success(f"🔍 {len(lignes_extraites)} ligne(s) de travaux détectée(s) automatiquement !")
+            st.success(f"🔍 {len(lignes_extraites)} ligne(s) détectée(s) automatiquement.")
         else:
-            st.warning("⚠️ Aucune ligne détaillée n'a pu être isolée automatiquement. Une ligne globale sera créée, vous pourrez l'ajuster.")
+            st.warning("⚠️ Aucune ligne détectée automatiquement. Vous pourrez les ajouter manuellement ci-dessous après l'enregistrement.")
 
     with st.form("form_devis", clear_on_submit=True):
         col1, col2 = st.columns(2)
@@ -479,7 +489,7 @@ with tab_devis:
             st.rerun()
 
     st.divider()
-    st.subheader("Liste des devis et sélection dynamique des lignes")
+    st.subheader("Liste des devis et ajout manuel de lignes")
     devis_rows = list_devis(current_pid)
     
     if not devis_rows:
@@ -505,15 +515,33 @@ with tab_devis:
                     st.rerun()
 
                 if lignes:
-                    st.markdown("*Lignes du devis (Cochez pour inclure dans le calcul global) :*")
+                    st.markdown("*Lignes du devis :*")
                     for l in lignes:
-                        cols_l = st.columns([1, 6, 2])
+                        cols_l = st.columns([1, 5, 2, 1])
                         inclus_actuel = cols_l[0].checkbox("Inclure", value=bool(l["inclus"]), key=f"ligne_{l['id']}")
                         if inclus_actuel != bool(l["inclus"]):
                             update_ligne_inclus(l["id"], inclus_actuel)
                             st.rerun()
                         cols_l[1].write(l["designation"])
                         cols_l[2].write(f"{l['montant_total']:,.2f} €")
+                        if cols_l[3].button("❌", key=f"delligne_{l['id']}"):
+                            delete_ligne_devis(l["id"])
+                            st.rerun()
+
+                # Formulaire d'ajout manuel d'une ligne pour ce devis
+                with st.expander("➕ Ajouter une ligne manuellement à ce devis"):
+                    with st.form(key=f"form_add_ligne_{d['id']}"):
+                        des_manuelle = st.text_input("Désignation de la ligne")
+                        col_q, col_p = st.columns(2)
+                        qte_manuelle = col_q.number_input("Quantité", min_value=0.1, value=1.0, step=1.0)
+                        prix_manuelle = col_p.number_input("Prix unitaire (€)", min_value=0.0, step=10.0)
+                        if st.form_submit_button("Ajouter cette ligne"):
+                            if des_manuelle and prix_manuelle > 0:
+                                add_ligne_devis(d["id"], des_manuelle, qte_manuelle, prix_manuelle)
+                                st.success("Ligne ajoutée !")
+                                st.rerun()
+                            else:
+                                st.error("Veuillez remplir la désignation et le prix.")
 
                 if d["pdf_data"]:
                     st.download_button("📄 Télécharger original", data=d["pdf_data"], file_name=d["pdf_nom"] or "devis.pdf", key=f"dl_{d['id']}")
