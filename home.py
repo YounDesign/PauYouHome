@@ -176,7 +176,7 @@ def save_or_get_contact(project_id, nom_entreprise, adresse, telephone, email, s
     else:
         cursor.execute(
             """INSERT INTO contacts (project_id, nom_entreprise, adresse, telephone, email, siret)
-                VALUES (?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?)""",
             (project_id, nom_entreprise or "Artisan / Fournisseur", adresse, telephone, email, siret)
         )
         cid = cursor.lastrowid
@@ -606,6 +606,23 @@ with tab_devis:
                     update_devis_categorie(d["id"], selected_cat)
                     st.rerun()
 
+                with c1.expander("✏️ Modifier nom / description"):
+                    with st.form(key=f"form_edit_meta_{d['id']}"):
+                        edit_nom_ent = st.text_input("Nom de l'entreprise", value=d["nom_entreprise"] or "")
+                        edit_desc = st.text_input("Description générale", value=d["description"] or "")
+                        if st.form_submit_button("Enregistrer"):
+                            if d["contact_id"]:
+                                update_contact_name(d["contact_id"], edit_nom_ent) if 'update_contact_name' in globals() else None
+                            else:
+                                cid = save_or_get_contact(current_pid, edit_nom_ent, "", "", "", "")
+                                conn = get_conn()
+                                conn.execute("UPDATE devis SET contact_id=? WHERE id=?", (cid, d["id"]))
+                                conn.commit()
+                                conn.close()
+                            update_devis_description(d["id"], edit_desc)
+                            st.success("Mis à jour !")
+                            st.rerun()
+
                 c1.caption(f"📁 {d['pdf_nom'] or 'Aucun fichier'} | 🏢 **{d['nom_entreprise'] or 'Artisan'}** | 📝 *{d['description'] or ''}*")
                 
                 lignes = list_lignes_devis(d["id"])
@@ -638,4 +655,131 @@ with tab_devis:
                             base64_pdf = base64.b64encode(d["pdf_data"]).decode('utf-8')
                             st.markdown(f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="400px" type="application/pdf"></iframe>', unsafe_allow_html=True)
                         else:
-                            st.info("Aucun document PDF attaché.")
+                            st.info("Aucun PDF associé.")
+                    with col_form:
+                        st.markdown("#### ✍️ Lignes du devis")
+                        for l in lignes:
+                            cols_l = st.columns([1, 3, 2, 1, 1])
+                            inclus_actuel = cols_l[0].checkbox("Inc.", value=bool(l["inclus"]), key=f"ligne_{l['id']}")
+                            if inclus_actuel != bool(l["inclus"]):
+                                update_ligne_inclus(l["id"], inclus_actuel)
+                                st.rerun()
+                            cols_l[1].write(l["designation"])
+                            cols_l[2].write(f"{l['montant_ttc']:,.2f}€ TTC")
+                            cols_l[3].write(f"{l['taux_tva']}%")
+                            if cols_l[4].button("❌", key=f"delligne_{l['id']}"):
+                                delete_ligne_devis(l["id"])
+                                st.rerun()
+                        with st.form(key=f"form_add_ligne_{d['id']}"):
+                            des_m = st.text_input("Désignation", key=f"desc_{d['id']}")
+                            cq, cp, cm, ct = st.columns(4)
+                            q_m = cq.number_input("Qté", min_value=0.1, value=1.0, key=f"qte_{d['id']}")
+                            p_m = cp.number_input("Prix", min_value=0.0, key=f"prix_{d['id']}")
+                            mode_m = cm.selectbox("Type", ["TTC", "HT"], key=f"mode_{d['id']}")
+                            tva_m = ct.selectbox("TVA", [20.0, 10.0, 5.5, 0.0], key=f"tva_{d['id']}")
+                            if st.form_submit_button("Ajouter"):
+                                if des_m and p_m > 0:
+                                    add_ligne_devis(d["id"], des_m, q_m, p_m, mode_m, tva_m)
+                                    st.rerun()
+
+with tab_contacts:
+    st.subheader("Gestion des contacts")
+    contacts = list_contacts(current_pid)
+    if not contacts:
+        st.info("Aucun contact.")
+    else:
+        for c in contacts:
+            with st.container(border=True):
+                st.write(f"### 🏢 {c['nom_entreprise']}")
+                st.write(f"**Tél** : {c['telephone'] or 'Non renseigné'} | **Email** : {c['email'] or 'Non renseigné'} | **SIRET** : {c['siret'] or 'Non renseigné'}")
+                st.write(f"**Adresse** : {c['adresse'] or 'Non renseignée'}")
+                with st.expander(f"✏️ Modifier ce contact"):
+                    with st.form(key=f"form_edit_contact_{c['id']}"):
+                        n_nom = st.text_input("Nom entreprise", value=c["nom_entreprise"] or "")
+                        col_c1, col_c2, col_c3 = st.columns(3)
+                        n_tel = col_c1.text_input("Tél", value=c["telephone"] or "")
+                        n_email = col_c2.text_input("Email", value=c["email"] or "")
+                        n_siret = col_c3.text_input("SIRET", value=c["siret"] or "")
+                        n_adresse = st.text_area("Adresse", value=c["adresse"] or "")
+                        if st.form_submit_button("Enregistrer"):
+                            update_contact_full(c["id"], n_nom, n_tel, n_email, n_siret, n_adresse)
+                            st.success("Mis à jour !")
+                            st.rerun()
+
+with tab_dashboard:
+    st.subheader(f"📊 Dashboard Financier Complet : {project['nom']}")
+    
+    # Récupération des valeurs
+    prix_achat = float(project["prix_achat"] or 0)
+    taux_notaire = float(project["taux_notaire"] or 7.5)
+    frais_notaire = prix_achat * taux_notaire / 100
+    
+    tot_travaux_ht, tot_travaux_ttc = get_total_travaux_valides(current_pid)
+    
+    # Coût total du projet avant emprunt (acquisition + notaire + travaux TTC)
+    investissement_total = prix_achat + frais_notaire + tot_travaux_ttc
+    
+    apport = float(financement["apport"] or 0)
+    montant_emprunt = max(0.0, investissement_total - apport)
+    
+    duree_ans = int(financement["duree_annees"] or 20)
+    nb_mois = duree_ans * 12
+    taux_annuel = float(financement["taux_interet"] or 3.5) / 100.0
+    taux_assurance_annuel = float(financement["taux_assurance"] or 0.34) / 100.0
+    
+    # Calcul des mensualités et coûts du crédit
+    if taux_annuel > 0:
+        taux_mensuel = taux_annuel / 12.0
+        mensualite_hc = montant_emprunt * (taux_mensuel * (1 + taux_mensuel)**nb_mois) / ((1 + taux_mensuel)**nb_mois - 1)
+    else:
+        mensualite_hc = montant_emprunt / nb_mois if nb_mois > 0 else 0
+        
+    total_interets = (mensualite_hc * nb_mois) - montant_emprunt if montant_emprunt > 0 else 0
+    assurance_mensuelle = (montant_emprunt * taux_assurance_annuel) / 12.0
+    total_assurance = assurance_mensuelle * nb_mois
+    
+    mensualite_totale = mensualite_hc + assurance_mensuelle
+    cout_total_credit = total_interets + total_assurance
+    cout_global_projet = investissement_total + cout_total_credit
+
+    # Affichage des métriques clés
+    col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+    col_m1.metric("Prix d'achat", f"{prix_achat:,.2f} €")
+    col_m2.metric("Frais de notaire", f"{frais_notaire:,.2f} €")
+    col_m3.metric("Travaux (TTC sélectionnés)", f"{tot_travaux_ttc:,.2f} €")
+    col_m4.metric("Coût Global du Projet", f"{cout_global_projet:,.2f} €", help="Achat + Notaire + Travaux + Intérêts + Assurance")
+
+    st.divider()
+    
+    col_d1, col_d2 = st.columns(2)
+    
+    with col_d1:
+        st.markdown("### 👥 Emprunteurs & Salaires")
+        e1_nom = financement["emprunteur_1_nom"] or "Emprunteur 1"
+        e1_sal = float(financement["emprunteur_1_salaire"] or 0)
+        e2_nom = financement["emprunteur_2_nom"] or "Emprunteur 2"
+        e2_sal = float(financement["emprunteur_2_salaire"] or 0)
+        total_salaires = e1_sal + e2_sal
+        
+        st.write(f"- **{e1_nom}** : {e1_sal:,.2f} € / mois")
+        if e2_sal > 0 or e2_nom != "Emprunteur 2":
+            st.write(f"- **{e2_nom}** : {e2_sal:,.2f} € / mois")
+            st.write(f"- **Total revenus du foyer** : **{total_salaires:,.2f} € / mois**")
+            if total_salaires > 0:
+                taux_endettement = (mensualite_totale / total_salaires) * 100
+                st.write(f"- **Taux d'endettement estimé** : **{taux_endettement:.1f}%** (Mensualité : {mensualite_totale:,.2f} €/mois)")
+        else:
+            if e1_sal > 0:
+                taux_endettement = (mensualite_totale / e1_sal) * 100
+                st.write(f"- **Taux d'endettement estimé** : **{taux_endettement:.1f}%** (Mensualité : {mensualite_totale:,.2f} €/mois)")
+
+    with col_d2:
+        st.markdown("### 🏦 Détail du Financement & Prêt")
+        st.write(- **Investissement total (hors crédit)**: f"{investissement_total:,.2f} €")
+        st.write(f"- **Apport personnel** : {apport:,.2f} €")
+        st.write(f"- **Montant emprunté** : {montant_emprunt:,.2f} €")
+        st.write(f"- **Durée du prêt** : {duree_ans} ans ({nb_mois} mois)")
+        st.write(f"- **Taux d'intérêt** : {financement['taux_interet']}% | **Assurance** : {financement['taux_assurance']}%")
+        st.write(f"- **Coût total des intérêts** : {total_interets:,.2f} €")
+        st.write(f"- **Coût total de l'assurance** : {total_assurance:,.2f} €")
+        st.write(f"- **Coût total du crédit** : **{cout_total_credit:,.2f} €**")import streamlit as st
