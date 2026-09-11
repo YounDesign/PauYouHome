@@ -782,4 +782,4 @@ with tab_dashboard:
         st.write(f"- **Taux d'intérêt** : {financement['taux_interet']}% | **Assurance** : {financement['taux_assurance']}%")
         st.write(f"- **Coût total des intérêts** : {total_interets:,.2f} €")
         st.write(f"- **Coût total de l'assurance** : {total_assurance:,.2f} €")
-        st.write(f"- **Coût total du crédit** : **{cout_total_credit:,.2f} €**")import streamlit as st
+        st.write(f"- **Coût total du crédit** : **{cout_total_credit:,.2f} €**")
