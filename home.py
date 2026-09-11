@@ -1,15 +1,4 @@
-"""
-Gestionnaire d'achat immobilier & travaux
-===========================================
-Application Streamlit pour piloter l'achat d'une maison (ou une extension/rénovation) :
-- suivi des devis (PDF joints, montants ajoutés au budget global)
-- simulation de financement (mensualité, taux d'endettement français, reste à vivre)
-- estimation de la plus-value à la revente (avec fiscalité simplifiée)
-- tableau de bord
-
-Lancer avec : streamlit run app.py
-"""
-
+```python
 import streamlit as st
 import sqlite3
 import pandas as pd
@@ -60,6 +49,15 @@ def init_db():
         pdf_nom TEXT,
         pdf_data BLOB,
         date_ajout TEXT
+    )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS devis_lignes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        devis_id INTEGER,
+        designation TEXT,
+        quantite REAL,
+        prix_unitaire REAL,
+        montant_total REAL,
+        inclus INTEGER DEFAULT 1
     )""")
     c.execute("""CREATE TABLE IF NOT EXISTS financement (
         project_id INTEGER PRIMARY KEY,
@@ -133,17 +131,26 @@ def get_project(pid):
     return row
 
 # ----------------------------------------------------------------------------
-# HELPERS DEVIS
+# HELPERS DEVIS & LIGNES
 # ----------------------------------------------------------------------------
 
-def add_devis(project_id, categorie, description, montant, statut, valeur_ajoutee, pdf_nom, pdf_data):
+def add_devis(project_id, categorie, description, montant, statut, valeur_ajoutee, pdf_nom, pdf_data, lignes=None):
     conn = get_conn()
-    conn.execute(
+    cursor = conn.cursor()
+    cursor.execute(
         """INSERT INTO devis (project_id, categorie, description, montant, statut,
            valeur_ajoutee, pdf_nom, pdf_data, date_ajout) VALUES (?,?,?,?,?,?,?,?,?)""",
         (project_id, categorie, description, montant, statut, valeur_ajoutee,
          pdf_nom, pdf_data, date.today().isoformat()),
     )
+    devis_id = cursor.lastrowid
+    if lignes:
+        for l in lignes:
+            cursor.execute(
+                """INSERT INTO devis_lignes (devis_id, designation, quantite, prix_unitaire, montant_total, inclus)
+                   VALUES (?, ?, ?, ?, ?, 1)""",
+                (devis_id, l["designation"], l["quantite"], l["prix_unitaire"], l["montant_total"])
+            )
     conn.commit()
     conn.close()
 
@@ -158,6 +165,7 @@ def list_devis(project_id):
 def delete_devis(devis_id):
     conn = get_conn()
     conn.execute("DELETE FROM devis WHERE id=?", (devis_id,))
+    conn.execute("DELETE FROM devis_lignes WHERE devis_id=?", (devis_id,))
     conn.commit()
     conn.close()
 
@@ -169,10 +177,24 @@ def update_devis_statut(devis_id, statut):
     conn.close()
 
 
-def extract_amount_from_pdf(file_bytes):
-    """Essaie de deviner un montant total dans un PDF de devis (best-effort)."""
+def list_lignes_devis(devis_id):
+    conn = get_conn()
+    rows = conn.execute("SELECT * FROM devis_lignes WHERE devis_id=?", (devis_id,)).fetchall()
+    conn.close()
+    return rows
+
+
+def update_ligne_inclus(ligne_id, inclus):
+    conn = get_conn()
+    conn.execute("UPDATE devis_lignes SET inclus=? WHERE id=?", (1 if inclus else 0, ligne_id))
+    conn.commit()
+    conn.close()
+
+
+def parse_devis_pdf(file_bytes):
+    """Analyse intelligente du PDF pour extraire le texte, le montant global et les lignes de travaux."""
     if not PDF_OK:
-        return None, ""
+        return None, "", []
     try:
         import io as _io
         text_all = ""
@@ -180,12 +202,15 @@ def extract_amount_from_pdf(file_bytes):
             for page in pdf.pages:
                 t = page.extract_text() or ""
                 text_all += t + "\n"
+        
+        # Extraction du montant TTC global
         candidates = re.findall(
-            r"(?:total\s*ttc|montant\s*ttc|total\s*t\.t\.c\.?|net\s*à\s*payer)\D{0,15}([\d\s]{1,3}(?:[\d\s]{3})*[.,]\d{2})",
+            r"(?:total\s*t\.?t\.?c\.?|net\s*à\s*payer)\D{0,15}([\d\s]{1,3}(?:[\d\s]{3})*[.,]\d{2})",
             text_all, flags=re.IGNORECASE,
         )
         if not candidates:
             candidates = re.findall(r"([\d\s]{1,3}(?:[\d\s]{3})*[.,]\d{2})\s*€", text_all)
+            
         amount = None
         if candidates:
             raw = candidates[-1].replace(" ", "").replace("\xa0", "").replace(",", ".")
@@ -193,12 +218,36 @@ def extract_amount_from_pdf(file_bytes):
                 amount = float(raw)
             except ValueError:
                 amount = None
-        return amount, text_all
+
+        # Extraction heuristique des lignes de devis (ex: désignation, quantité, prix)
+        lignes = []
+        lignes_texte = text_all.split("\n")
+        for ligne in lignes_texte:
+            # Recherche de motifs de lignes chiffrées (ex: libellé ... prix)
+            match_prix = re.search(r"([\d\s]{1,3}(?:[\d\s]{3})*[.,]\d{2})\s*(?:€)?$", ligne)
+            if match_prix and len(ligne.strip()) > 10:
+                prix_str = match_prix.group(1).replace(" ", "").replace("\xa0", "").replace(",", ".")
+                try:
+                    p_val = float(prix_str)
+                    if p_val < 50000: # éviter de prendre le total TTC global comme simple ligne
+                        designation = ligne[:match_prix.start()].strip()
+                        designation = re.sub(r"^[-\u2010\u2011\u2012\u2013\u2014\u2015]\s*", "", designation).strip()
+                        if designation:
+                            lignes.append({
+                                "designation": designation,
+                                "quantite": 1.0,
+                                "prix_unitaire": p_val,
+                                "montant_total": p_val
+                            })
+                except ValueError:
+                    pass
+
+        return amount, text_all, lignes
     except Exception:
-        return None, ""
+        return None, "", []
 
 # ----------------------------------------------------------------------------
-# HELPERS FINANCEMENT / REVENTE
+# HELPERS FINANCEMENT / REVENTE / CALCULS
 # ----------------------------------------------------------------------------
 
 def get_financement(pid):
@@ -238,12 +287,8 @@ def save_revente(pid, prix_revente, residence_principale, duree_detention, frais
     conn.commit()
     conn.close()
 
-# ----------------------------------------------------------------------------
-# CALCULS FINANCIERS
-# ----------------------------------------------------------------------------
 
 def mensualite_credit(capital, taux_annuel_pct, duree_annees, taux_assurance_pct=0.0):
-    """Mensualité hors assurance, mensualité assurance, mensualité totale."""
     if capital <= 0 or duree_annees <= 0:
         return 0.0, 0.0, 0.0
     n = duree_annees * 12
@@ -270,16 +315,8 @@ def cout_total_credit(mensualite_totale, duree_annees, capital):
     return mensualite_totale * duree_annees * 12 - capital
 
 
-ABATTEMENT_IR = {  # % d'exonération cumulée impôt sur le revenu (19%) selon années de détention
-    # (années_min, taux exonération par année entre années_min et années_max, ...)
-}
-
 def abattement_plus_value(duree_annees):
-    """Retourne (pct_exonere_IR, pct_exonere_PS) pour une durée de détention donnée.
-    Barème applicable aux résidences secondaires / biens locatifs (hors résidence principale).
-    """
     d = duree_annees
-    # Impôt sur le revenu (19%) : exonération totale à partir de 22 ans
     if d <= 5:
         exo_ir = 0.0
     elif d < 22:
@@ -288,7 +325,6 @@ def abattement_plus_value(duree_annees):
         exo_ir = 100.0
     exo_ir = min(exo_ir, 100.0)
 
-    # Prélèvements sociaux (17.2%) : exonération totale à partir de 30 ans
     if d <= 5:
         exo_ps = 0.0
     elif d < 22:
@@ -303,7 +339,7 @@ def abattement_plus_value(duree_annees):
 
 
 def calcul_plus_value(prix_achat, frais_notaire, total_travaux, frais_divers, prix_revente,
-                       residence_principale, duree_detention):
+                      residence_principale, duree_detention):
     cout_acquisition = prix_achat + frais_notaire + total_travaux + frais_divers
     plus_value_brute = prix_revente - cout_acquisition
 
@@ -337,7 +373,6 @@ def calcul_plus_value(prix_achat, frais_notaire, total_travaux, frais_divers, pr
     impot_ir = base_ir * 0.19
     impot_ps = base_ps * 0.172
 
-    # Surtaxe sur les plus-values > 50 000 € (barème simplifié, taux moyen appliqué au-delà du seuil)
     surtaxe = 0.0
     if base_ir > 50000:
         if base_ir <= 60000:
@@ -363,8 +398,7 @@ def calcul_plus_value(prix_achat, frais_notaire, total_travaux, frais_divers, pr
         "surtaxe": surtaxe,
         "impot_total": impot_total,
         "plus_value_nette": plus_value_nette,
-        "note": f"Exonération IR: {exo_ir:.0f}% · Exonération prélèvements sociaux: {exo_ps:.0f}% "
-                f"(barème indicatif, hors cas particuliers).",
+        "note": f"Exonération IR: {exo_ir:.0f}% · Exonération prélèvements sociaux: {exo_ps:.0f}%",
     }
 
 
@@ -375,7 +409,7 @@ def fmt_eur(x):
         return str(x)
 
 # ----------------------------------------------------------------------------
-# UI - SIDEBAR : sélection / création de projet
+# UI - SIDEBAR : projets
 # ----------------------------------------------------------------------------
 
 st.title("🏠 Gestion d'achat immobilier & travaux")
@@ -396,13 +430,10 @@ with st.sidebar:
         nom = st.text_input("Nom du projet", key="new_nom")
         type_ = st.selectbox("Type", ["Achat maison", "Extension / travaux seuls"], key="new_type")
         prix_achat = st.number_input("Prix d'achat (€)", min_value=0.0, step=1000.0, key="new_prix")
-        taux_notaire = st.number_input(
-            "Frais de notaire (%)", min_value=0.0, max_value=15.0, value=7.5, step=0.1,
-            help="≈ 7 à 8% dans l'ancien, ≈ 2 à 3% dans le neuf.", key="new_notaire"
-        )
+        taux_notaire = st.number_input("Frais de notaire (%)", min_value=0.0, max_value=15.0, value=7.5, step=0.1, key="new_notaire")
         if st.button("Créer le projet"):
             if nom:
-                new_id = create_project(nom, type_, prix_achat, taux_notaire)
+                create_project(nom, type_, prix_achat, taux_notaire)
                 st.success("Projet créé.")
                 st.rerun()
             else:
@@ -410,7 +441,6 @@ with st.sidebar:
 
     if current_pid:
         with st.expander("🗑️ Supprimer ce projet"):
-            st.warning("Action irréversible (devis, financement, revente inclus).")
             if st.button("Confirmer la suppression"):
                 delete_project(current_pid)
                 st.rerun()
@@ -419,6 +449,20 @@ if not current_pid:
     st.stop()
 
 project = get_project(current_pid)
+
+# Calcul dynamique du total des travaux basé uniquement sur les lignes cochées
+def get_total_travaux_valides(pid):
+    devis_rows = list_devis(pid)
+    total = 0.0
+    for d in devis_rows:
+        lignes = list_lignes_devis(d["id"])
+        if lignes:
+            for l in lignes:
+                if l["inclus"] == 1:
+                    total += l["montant_total"] or 0
+        else:
+            total += d["montant"] or 0
+    return total
 
 # ----------------------------------------------------------------------------
 # TABS
@@ -435,34 +479,38 @@ with tab_achat:
     with col1:
         prix_achat = st.number_input("Prix d'achat (€)", min_value=0.0, step=1000.0, value=float(project["prix_achat"]))
     with col2:
-        taux_notaire = st.number_input(
-            "Frais de notaire (%)", min_value=0.0, max_value=15.0, value=float(project["taux_notaire"]), step=0.1
-        )
+        taux_notaire = st.number_input("Frais de notaire (%)", min_value=0.0, max_value=15.0, value=float(project["taux_notaire"]), step=0.1)
     if st.button("💾 Enregistrer", key="save_achat"):
         update_project(current_pid, prix_achat=prix_achat, taux_notaire=taux_notaire)
         st.success("Mis à jour.")
         st.rerun()
 
     frais_notaire_eur = project["prix_achat"] * project["taux_notaire"] / 100
-    devis_rows = list_devis(current_pid)
-    total_travaux = sum(d["montant"] or 0 for d in devis_rows)
+    total_travaux = get_total_travaux_valides(current_pid)
     cout_total = project["prix_achat"] + frais_notaire_eur + total_travaux
 
     st.divider()
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Prix d'achat", fmt_eur(project["prix_achat"]))
     c2.metric("Frais de notaire", fmt_eur(frais_notaire_eur))
-    c3.metric("Total travaux (devis)", fmt_eur(total_travaux))
+    c3.metric("Total travaux validés", fmt_eur(total_travaux))
     c4.metric("Coût total du projet", fmt_eur(cout_total))
 
-# ---- DEVIS & TRAVAUX ----
+# ---- DEVIS & TRAVAUX (avec analyse PDF & gestion fine des lignes) ----
 with tab_devis:
     st.subheader("Ajouter un devis / une dépense de travaux")
     if not PDF_OK:
-        st.warning(
-            "Le module `pdfplumber` n'est pas installé : les PDF pourront être joints et stockés, "
-            "mais le montant ne sera pas pré-rempli automatiquement."
-        )
+        st.warning("Le module `pdfplumber` n'est pas installé. Installe-le pour l'analyse automatique des PDF.")
+
+    pdf_file = st.file_uploader("Importer un devis (PDF)", type=["pdf"])
+    montant_detecte = None
+    texte_brut = ""
+    lignes_extraites = []
+
+    if pdf_file is not None and PDF_OK:
+        montant_detecte, texte_brut, lignes_extraites = parse_devis_pdf(pdf_file.getvalue())
+        if montant_detecte:
+            st.info(f"Montant TTC détecté automatiquement : {fmt_eur(montant_detecte)}")
 
     with st.form("form_devis", clear_on_submit=True):
         col1, col2 = st.columns(2)
@@ -473,330 +521,171 @@ with tab_devis:
                  "Toiture", "Isolation", "Menuiserie", "Peinture / finitions", "Aménagement extérieur",
                  "Étude / architecte", "Autre"],
             )
-            description = st.text_input("Description")
+            description = st.text_input("Description / Intitulé du devis")
         with col2:
             statut = st.selectbox("Statut", ["Devis reçu", "Devis signé", "En cours", "Terminé / payé"])
-            valeur_ajoutee = st.number_input(
-                "Valeur ajoutée estimée à la revente (€)", min_value=0.0, step=500.0,
-                help="Optionnel : estimation de la plus-value que ce poste de travaux devrait apporter au bien."
-            )
-
-        pdf_file = st.file_uploader("Devis (PDF)", type=["pdf"])
-        montant_detecte = None
-        if pdf_file is not None and PDF_OK:
-            montant_detecte, _ = extract_amount_from_pdf(pdf_file.getvalue())
-            if montant_detecte:
-                st.info(f"Montant détecté dans le PDF : {fmt_eur(montant_detecte)} (vérifie avant de valider)")
+            valeur_ajoutee = st.number_input("Valeur ajoutée estimée à la revente (€)", min_value=0.0, step=500.0)
 
         montant = st.number_input(
-            "Montant TTC (€)", min_value=0.0, step=100.0,
+            "Montant total TTC (€)", min_value=0.0, step=100.0,
             value=float(montant_detecte) if montant_detecte else 0.0,
         )
 
-        submitted = st.form_submit_button("Ajouter au budget")
+        submitted = st.form_submit_button("Enregistrer le devis et ses lignes")
         if submitted:
             pdf_bytes = pdf_file.getvalue() if pdf_file is not None else None
             pdf_nom = pdf_file.name if pdf_file is not None else None
-            add_devis(current_pid, categorie, description, montant, statut, valeur_ajoutee, pdf_nom, pdf_bytes)
-            st.success("Devis ajouté et intégré au budget.")
+            
+            # Si aucune ligne n'a été détectée automatiquement, on crée une ligne par défaut avec le montant global
+            lignes_a_sauvegarder = lignes_extraites if lignes_extraites else [{
+                "designation": description or "Prestation globale",
+                "quantite": 1.0,
+                "prix_unitaire": montant,
+                "montant_total": montant
+            }]
+            
+            add_devis(current_pid, categorie, description or (pdf_nom if pdf_file else "Devis manuel"), 
+                      montant, statut, valeur_ajoutee, pdf_nom, pdf_bytes, lignes_a_sauvegarder)
+            st.success("Devis ajouté avec succès.")
             st.rerun()
 
     st.divider()
-    st.subheader("Gestion, filtrage et validation des devis")
+    st.subheader("Validation détaillée des postes et lignes de devis")
     
-    filtre_statut = st.selectbox(
-        "Filtrer l'affichage par statut", 
-        ["Tous", "Devis reçu", "Devis signé", "En cours", "Terminé / payé"]
-    )
-
+    filtre_statut = st.selectbox("Filtrer par statut", ["Tous", "Devis reçu", "Devis signé", "En cours", "Terminé / payé"])
     devis_rows = list_devis(current_pid)
+    
+    if filtre_statut != "Tous":
+        devis_rows = [d for d in devis_rows if d["statut"] == filtre_statut]
+
     if not devis_rows:
-        st.caption("Aucun devis pour l'instant.")
+        st.caption("Aucun devis enregistré.")
     else:
-        rows_a_afficher = devis_rows
-        if filtre_statut != "Tous":
-            rows_a_afficher = [d for d in devis_rows if d["statut"] == filtre_statut]
+        for d in devis_rows:
+            with st.container(border=True):
+                cols = st.columns([3, 2, 2, 1])
+                cols[0].write(f"**{d['categorie']}** : {d['description'] or ''}")
+                cols[1].write(f"Total devis : {fmt_eur(d['montant'])}")
+                
+                nouveau_statut = cols[2].selectbox(
+                    "Statut", ["Devis reçu", "Devis signé", "En cours", "Terminé / payé"],
+                    index=["Devis reçu", "Devis signé", "En cours", "Terminé / payé"].index(d["statut"])
+                    if d["statut"] in ["Devis reçu", "Devis signé", "En cours", "Terminé / payé"] else 0,
+                    key=f"statut_{d['id']}", label_visibility="collapsed"
+                )
+                if nouveau_statut != d["statut"]:
+                    update_devis_statut(d["id"], nouveau_statut)
+                    st.rerun()
 
-        if not rows_a_afficher:
-            st.caption("Aucun devis ne correspond à ce filtre.")
-        else:
-            devis_selectionnes = []
-            for d in rows_a_afficher:
-                with st.container(border=True):
-                    cols = st.columns([1, 3, 2, 2, 2, 1])
-                    inclure = cols[0].checkbox("Inclure", value=True, key=f"chk_{d['id']}")
-                    if inclure:
-                        devis_selectionnes.append(d)
-                    
-                    cols[1].write(f"**{d['categorie']}** — {d['description'] or ''}")
-                    cols[2].write(fmt_eur(d["montant"]))
-                    
-                    nouveau_statut = cols[3].selectbox(
-                        "Statut", ["Devis reçu", "Devis signé", "En cours", "Terminé / payé"],
-                        index=["Devis reçu", "Devis signé", "En cours", "Terminé / payé"].index(d["statut"])
-                        if d["statut"] in ["Devis reçu", "Devis signé", "En cours", "Terminé / payé"] else 0,
-                        key=f"statut_{d['id']}", label_visibility="collapsed"
-                    )
-                    if nouveau_statut != d["statut"]:
-                        update_devis_statut(d["id"], nouveau_statut)
-                        st.rerun()
-                        
-                    if d["pdf_data"]:
-                        cols[4].download_button(
-                            "📄 PDF", data=d["pdf_data"], file_name=d["pdf_nom"] or "devis.pdf",
-                            key=f"dl_{d['id']}",
-                        )
-                    else:
-                        cols[4].caption("Pas de PDF")
-                        
-                    cols[5].caption(f"+VA: {fmt_eur(d['valeur_ajoutee'])}")
-                    if cols[5].button("🗑️", key=f"del_{d['id']}"):
-                        delete_devis(d["id"])
-                        st.rerun()
+                if cols[3].button("🗑️ Supprimer", key=f"del_{d['id']}_{d['categorie']}"):
+                    delete_devis(d["id"])
+                    st.rerun()
 
-            total_selectionne = sum(d["montant"] or 0 for d in devis_selectionnes)
-            st.divider()
-            st.metric("Total des travaux validés (sélectionnés)", fmt_eur(total_selectionne))
-            
-            df_devis = pd.DataFrame([dict(d) for d in devis_rows])
-            fig = px.pie(df_devis, values="montant", names="categorie", title="Répartition du budget travaux global")
-            st.plotly_chart(fig, use_container_width=True)
+                # Gestion interactive des lignes de devis (cases à cocher individuelles)
+                lignes = list_lignes_devis(d["id"])
+                if lignes:
+                    st.markdown("*Lignes du devis (décochez pour exclure du budget global) :*")
+                    for l in lignes:
+                        c_chk, c_desc, c_prix = st.columns([1, 6, 2])
+                        inclus_actuel = c_chk.checkbox("Prendre en compte", value=bool(l["inclus"]), key=f"ligne_{l['id']}")
+                        if inclus_actuel != bool(l["inclus"]):
+                            update_ligne_inclus(l["id"], inclus_actuel)
+                            st.rerun()
+                        c_desc.write(l["designation"])
+                        c_prix.write(fmt_eur(l["montant_total"]))
+
+                if d["pdf_data"]:
+                    st.download_button("📄 Télécharger le PDF original", data=d["pdf_data"], file_name=d["pdf_nom"] or "devis.pdf", key=f"dl_{d['id']}")
+
+        total_travaux_global = get_total_travaux_valides(current_pid)
+        st.divider()
+        st.metric("Total cumulé des travaux validés (lignes cochées)", fmt_eur(total_travaux_global))
+
 # ---- FINANCEMENT ----
 with tab_financement:
     st.subheader("Simulation de financement")
     fin = get_financement(current_pid)
-    devis_rows = list_devis(current_pid)
-    total_travaux = sum(d["montant"] or 0 for d in devis_rows)
+    total_travaux = get_total_travaux_valides(current_pid)
     frais_notaire_eur = project["prix_achat"] * project["taux_notaire"] / 100
     cout_total_projet = project["prix_achat"] + frais_notaire_eur + total_travaux
 
     col1, col2 = st.columns(2)
     with col1:
-        apport = st.number_input(
-            "Apport personnel (€)", min_value=0.0, step=1000.0,
-            value=float(fin["apport"]) if fin else 0.0,
-        )
-        duree = st.slider(
-            "Durée du prêt (années)", min_value=5, max_value=30,
-            value=int(fin["duree_annees"]) if fin else 20,
-        )
-        taux_interet = st.number_input(
-            "Taux d'intérêt annuel (%)", min_value=0.0, max_value=15.0, step=0.05,
-            value=float(fin["taux_interet"]) if fin else 3.5,
-        )
-        taux_assurance = st.number_input(
-            "Taux d'assurance emprunteur (%/an du capital)", min_value=0.0, max_value=3.0, step=0.01,
-            value=float(fin["taux_assurance"]) if fin else 0.34,
-        )
+        apport = st.number_input("Apport personnel (€)", min_value=0.0, step=1000.0, value=float(fin["apport"]) if fin else 0.0)
+        duree = st.slider("Durée du prêt (années)", min_value=5, max_value=30, value=int(fin["duree_annees"]) if fin else 20)
+        taux_interet = st.number_input("Taux d'intérêt annuel (%)", min_value=0.0, max_value=15.0, step=0.05, value=float(fin["taux_interet"]) if fin else 3.5)
+        taux_assurance = st.number_input("Taux d'assurance (%/an)", min_value=0.0, max_value=3.0, step=0.01, value=float(fin["taux_assurance"]) if fin else 0.34)
     with col2:
-        revenus_mensuels = st.number_input(
-            "Revenus mensuels nets du foyer (€)", min_value=0.0, step=100.0,
-            value=float(fin["revenus_mensuels"]) if fin else 0.0,
-        )
-        charges_mensuelles = st.number_input(
-            "Autres charges mensuelles récurrentes (€)", min_value=0.0, step=50.0,
-            value=float(fin["charges_mensuelles"]) if fin else 0.0,
-            help="Autres crédits, pensions alimentaires versées, etc. (hors futur crédit immo).",
-        )
+        revenus_mensuels = st.number_input("Revenus mensuels nets du foyer (€)", min_value=0.0, step=100.0, value=float(fin["revenus_mensuels"]) if fin else 0.0)
+        charges_mensuelles = st.number_input("Autres charges récurrentes (€)", min_value=0.0, step=50.0, value=float(fin["charges_mensuelles"]) if fin else 0.0)
 
-    if st.button("💾 Enregistrer les paramètres de financement"):
+    if st.button("💾 Enregistrer le financement"):
         save_financement(current_pid, apport, duree, taux_interet, taux_assurance, revenus_mensuels, charges_mensuelles)
-        st.success("Enregistré.")
+        st.success("Financement enregistré.")
         st.rerun()
 
     capital_emprunte = max(cout_total_projet - apport, 0)
-    m_hors_assurance, m_assurance, m_totale = mensualite_credit(capital_emprunte, taux_interet, duree, taux_assurance)
+    m_hors_ass, m_ass, m_totale = mensualite_credit(capital_emprunte, taux_interet, duree, taux_assurance)
     taux_end = taux_endettement(m_totale, charges_mensuelles, revenus_mensuels)
     rav = reste_a_vivre(revenus_mensuels, charges_mensuelles, m_totale)
     cout_credit = cout_total_credit(m_totale, duree, capital_emprunte)
 
     st.divider()
-    st.markdown("### Résultat de la simulation")
     c1, c2, c3 = st.columns(3)
-    c1.metric("Coût total du projet", fmt_eur(cout_total_projet))
-    c2.metric("Capital à emprunter", fmt_eur(capital_emprunte))
-    c3.metric("Mensualité totale (avec assurance)", fmt_eur(m_totale))
-
-    c4, c5, c6 = st.columns(3)
-    c4.metric(
-        "Taux d'endettement", f"{taux_end:.1f} %",
-        delta=f"{taux_end - 35:.1f} pts vs plafond HCSF (35%)", delta_color="inverse",
-    )
-    c5.metric("Reste à vivre estimé / mois", fmt_eur(rav))
-    c6.metric("Coût total du crédit (intérêts + assurance)", fmt_eur(cout_credit))
+    c1.metric("Capital à emprunter", fmt_eur(capital_emprunte))
+    c2.metric("Mensualité totale", fmt_eur(m_totale))
+    c3.metric("Taux d'endettement", f"{taux_end:.1f} %")
 
     if taux_end > 35:
-        st.error(
-            "⚠️ Le taux d'endettement dépasse le plafond de 35% recommandé par le HCSF "
-            "(Haut Conseil de Stabilité Financière) pour les crédits immobiliers en France. "
-            "Les banques dérogent parfois à cette règle pour une partie de leurs dossiers, "
-            "mais ce n'est pas garanti."
-        )
+        st.error("⚠️ Attention : Le taux d'endettement dépasse le plafond recommandé de 35% (HCSF).")
     else:
-        st.success("✅ Le taux d'endettement reste sous le plafond indicatif de 35%.")
-
-    st.caption(
-        "Ceci est une simulation indicative. Le calcul réel d'une banque intègre aussi le "
-        "'reste à vivre', le profil emprunteur, l'apport, la stabilité des revenus, etc."
-    )
-
-    st.divider()
-    st.markdown("### Comparateur de scénarios (durée × taux)")
-    durees_cmp = [15, 20, 25, 30]
-    taux_cmp = [taux_interet - 0.5, taux_interet, taux_interet + 0.5]
-    taux_cmp = [max(t, 0) for t in taux_cmp]
-    rows = []
-    for d in durees_cmp:
-        row = {"Durée (ans)": d}
-        for t in taux_cmp:
-            _, _, mt = mensualite_credit(capital_emprunte, t, d, taux_assurance)
-            row[f"Taux {t:.2f}%"] = round(mt)
-        rows.append(row)
-    st.dataframe(pd.DataFrame(rows).set_index("Durée (ans)"), use_container_width=True)
-
-    fig2 = go.Figure()
-    for t in taux_cmp:
-        mensualites = []
-        for d in range(5, 31):
-            _, _, mt = mensualite_credit(capital_emprunte, t, d, taux_assurance)
-            mensualites.append(mt)
-        fig2.add_trace(go.Scatter(x=list(range(5, 31)), y=mensualites, mode="lines", name=f"Taux {t:.2f}%"))
-    fig2.update_layout(title="Mensualité selon la durée du prêt", xaxis_title="Durée (années)", yaxis_title="Mensualité (€)")
-    st.plotly_chart(fig2, use_container_width=True)
+        st.success("✅ Taux d'endettement conforme aux normes HCSF (<= 35%).")
 
 # ---- REVENTE / PLUS-VALUE ----
 with tab_revente:
     st.subheader("Estimation de la plus-value à la revente")
     rev = get_revente(current_pid)
-    devis_rows = list_devis(current_pid)
-    total_travaux = sum(d["montant"] or 0 for d in devis_rows)
+    total_travaux = get_total_travaux_valides(current_pid)
     frais_notaire_eur = project["prix_achat"] * project["taux_notaire"] / 100
 
     col1, col2 = st.columns(2)
     with col1:
-        prix_revente = st.number_input(
-            "Prix de revente estimé (€)", min_value=0.0, step=1000.0,
-            value=float(rev["prix_revente_estime"]) if rev else 0.0,
-        )
-        residence_principale = st.checkbox(
-            "Il s'agit de ma résidence principale",
-            value=bool(rev["residence_principale"]) if rev else True,
-            help="En France, la plus-value sur la résidence principale est exonérée d'impôt.",
-        )
+        prix_revente = st.number_input("Prix de revente estimé (€)", min_value=0.0, step=1000.0, value=float(rev["prix_revente_estime"]) if rev else 0.0)
+        residence_principale = st.checkbox("Résidence principale", value=bool(rev["residence_principale"]) if rev else True)
     with col2:
-        duree_detention = st.number_input(
-            "Durée de détention prévue (années)", min_value=0.0, step=1.0,
-            value=float(rev["duree_detention_annees"]) if rev else 5.0,
-        )
-        frais_divers = st.number_input(
-            "Frais divers (agence à la revente, diagnostics...) (€)", min_value=0.0, step=500.0,
-            value=float(rev["frais_divers"]) if rev else 0.0,
-        )
+        duree_detention = st.number_input("Durée de détention (années)", min_value=0.0, step=1.0, value=float(rev["duree_detention_annees"]) if rev else 5.0)
+        frais_divers = st.number_input("Frais divers revente (agence...) (€)", min_value=0.0, step=500.0, value=float(rev["frais_divers"]) if rev else 0.0)
 
-    if st.button("💾 Enregistrer", key="save_revente"):
+    if st.button("💾 Enregistrer la revente"):
         save_revente(current_pid, prix_revente, residence_principale, duree_detention, frais_divers)
         st.success("Enregistré.")
         st.rerun()
 
-    resultat = calcul_plus_value(
-        project["prix_achat"], frais_notaire_eur, total_travaux, frais_divers,
-        prix_revente, residence_principale, duree_detention,
-    )
+    resultat = calcul_plus_value(project["prix_achat"], frais_notaire_eur, total_travaux, frais_divers, prix_revente, residence_principale, duree_detention)
 
     st.divider()
     c1, c2, c3 = st.columns(3)
     c1.metric("Coût total d'acquisition", fmt_eur(resultat["cout_acquisition"]))
     c2.metric("Plus-value brute", fmt_eur(resultat["plus_value_brute"]))
-    c3.metric("Plus-value nette (après impôt)", fmt_eur(resultat["plus_value_nette"]))
-
-    if not residence_principale and resultat["plus_value_brute"] > 0:
-        c4, c5, c6 = st.columns(3)
-        c4.metric("Impôt sur le revenu (19%)", fmt_eur(resultat["impot_ir"]))
-        c5.metric("Prélèvements sociaux (17.2%)", fmt_eur(resultat["impot_ps"]))
-        c6.metric("Surtaxe (si > 50k€)", fmt_eur(resultat["surtaxe"]))
-
+    c3.metric("Plus-value nette", fmt_eur(resultat["plus_value_nette"]))
     st.info(resultat["note"])
-    st.caption(
-        "⚠️ Simulation indicative basée sur le barème général des plus-values immobilières en France. "
-        "Ne tient pas compte de cas particuliers (donation, indivision, usufruit, travaux déductibles "
-        "sur justificatifs après 5 ans, etc.). Ceci n'est pas un conseil fiscal — vérifie ta situation "
-        "avec un notaire ou un conseiller fiscal avant toute décision."
-    )
-
-    st.divider()
-    st.markdown("### Valeur ajoutée par poste de travaux")
-    if devis_rows:
-        df = pd.DataFrame([dict(d) for d in devis_rows])
-        df_va = df[["categorie", "description", "montant", "valeur_ajoutee"]].copy()
-        df_va["ROI (%)"] = (df_va["valeur_ajoutee"] / df_va["montant"].replace(0, pd.NA) * 100).round(0)
-        st.dataframe(df_va, use_container_width=True)
-        st.caption(
-            f"Valeur ajoutée totale estimée par les travaux : {fmt_eur(df['valeur_ajoutee'].sum())} "
-            f"pour {fmt_eur(df['montant'].sum())} dépensés."
-        )
-    else:
-        st.caption("Ajoute des devis avec une valeur ajoutée estimée pour voir le ROI par poste.")
 
 # ---- DASHBOARD ----
 with tab_dashboard:
     st.subheader("Tableau de bord global")
-    devis_rows = list_devis(current_pid)
-    total_travaux = sum(d["montant"] or 0 for d in devis_rows)
+    total_travaux = get_total_travaux_valides(current_pid)
     frais_notaire_eur = project["prix_achat"] * project["taux_notaire"] / 100
     cout_total_projet = project["prix_achat"] + frais_notaire_eur + total_travaux
-    fin = get_financement(current_pid)
-    rev = get_revente(current_pid)
 
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3 = st.cols(3) if False else st.columns(3)
     c1.metric("Prix d'achat", fmt_eur(project["prix_achat"]))
     c2.metric("Coût total projet", fmt_eur(cout_total_projet))
-    if fin:
-        capital_emprunte = max(cout_total_projet - fin["apport"], 0)
-        _, _, m_totale = mensualite_credit(capital_emprunte, fin["taux_interet"], fin["duree_annees"], fin["taux_assurance"])
-        c3.metric("Mensualité prévue", fmt_eur(m_totale))
-    else:
-        c3.metric("Mensualité prévue", "—")
-    if rev and rev["prix_revente_estime"]:
-        resultat = calcul_plus_value(
-            project["prix_achat"], frais_notaire_eur, total_travaux, rev["frais_divers"],
-            rev["prix_revente_estime"], rev["residence_principale"], rev["duree_detention_annees"],
-        )
-        c4.metric("Plus-value nette estimée", fmt_eur(resultat["plus_value_nette"]))
-    else:
-        c4.metric("Plus-value nette estimée", "—")
+    c3.metric("Total travaux validés", fmt_eur(total_travaux))
 
-    st.divider()
-    colA, colB = st.columns(2)
-    with colA:
-        st.markdown("#### Répartition du coût total")
-        fig = go.Figure(data=[go.Pie(
-            labels=["Prix d'achat", "Frais de notaire", "Travaux"],
-            values=[project["prix_achat"], frais_notaire_eur, total_travaux],
-        )])
-        st.plotly_chart(fig, use_container_width=True)
-    with colB:
-        st.markdown("#### Avancement des devis")
-        if devis_rows:
-            df = pd.DataFrame([dict(d) for d in devis_rows])
-            counts = df["statut"].value_counts().reset_index()
-            counts.columns = ["Statut", "Nombre"]
-            fig2 = px.bar(counts, x="Statut", y="Nombre")
-            st.plotly_chart(fig2, use_container_width=True)
-        else:
-            st.caption("Pas encore de devis.")
+    fig = go.Figure(data=[go.Pie(
+        labels=["Prix d'achat", "Frais de notaire", "Travaux validés"],
+        values=[project["prix_achat"], frais_notaire_eur, total_travaux],
+    )])
+    st.plotly_chart(fig, use_container_width=True)
 
-    st.divider()
-    st.markdown("#### Checklist / idées à ne pas oublier")
-    st.markdown(
-        """
-- [ ] Vérifier le DPE et les diagnostics obligatoires
-- [ ] Demander au moins 2-3 devis par corps de métier pour comparer
-- [ ] Vérifier les assurances (dommages-ouvrage si gros travaux/extension)
-- [ ] Anticiper le délai d'obtention du permis de construire / déclaration préalable pour une extension
-- [ ] Vérifier le PLU (règles d'urbanisme) avant de chiffrer une extension
-- [ ] Prévoir une marge de sécurité de 10-15% sur le budget travaux (imprévus)
-- [ ] Comparer plusieurs offres de prêt (courtier vs banques directes)
-- [ ] Vérifier la taxe foncière actuelle et son évolution prévisible
-        """
-    )
-
+```
