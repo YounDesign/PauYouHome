@@ -461,8 +461,7 @@ with tab_devis:
     if not PDF_OK:
         st.warning(
             "Le module `pdfplumber` n'est pas installé : les PDF pourront être joints et stockés, "
-            "mais le montant ne sera pas pré-rempli automatiquement. Installe-le avec "
-            "`pip install pdfplumber` pour activer la détection automatique."
+            "mais le montant ne sera pas pré-rempli automatiquement."
         )
 
     with st.form("form_devis", clear_on_submit=True):
@@ -503,43 +502,65 @@ with tab_devis:
             st.rerun()
 
     st.divider()
-    st.subheader("Devis enregistrés")
+    st.subheader("Gestion, filtrage et validation des devis")
+    
+    filtre_statut = st.selectbox(
+        "Filtrer l'affichage par statut", 
+        ["Tous", "Devis reçu", "Devis signé", "En cours", "Terminé / payé"]
+    )
+
     devis_rows = list_devis(current_pid)
     if not devis_rows:
         st.caption("Aucun devis pour l'instant.")
     else:
-        for d in devis_rows:
-            with st.container(border=True):
-                cols = st.columns([3, 2, 2, 2, 2, 1])
-                cols[0].write(f"**{d['categorie']}** — {d['description'] or ''}")
-                cols[1].write(fmt_eur(d["montant"]))
-                nouveau_statut = cols[2].selectbox(
-                    "Statut", ["Devis reçu", "Devis signé", "En cours", "Terminé / payé"],
-                    index=["Devis reçu", "Devis signé", "En cours", "Terminé / payé"].index(d["statut"])
-                    if d["statut"] in ["Devis reçu", "Devis signé", "En cours", "Terminé / payé"] else 0,
-                    key=f"statut_{d['id']}", label_visibility="collapsed",
-                )
-                if nouveau_statut != d["statut"]:
-                    update_devis_statut(d["id"], nouveau_statut)
-                    st.rerun()
-                if d["pdf_data"]:
-                    cols[3].download_button(
-                        "📄 PDF", data=d["pdf_data"], file_name=d["pdf_nom"] or "devis.pdf",
-                        key=f"dl_{d['id']}",
+        rows_a_afficher = devis_rows
+        if filtre_statut != "Tous":
+            rows_a_afficher = [d for d in devis_rows if d["statut"] == filtre_statut]
+
+        if not rows_a_afficher:
+            st.caption("Aucun devis ne correspond à ce filtre.")
+        else:
+            devis_selectionnes = []
+            for d in rows_a_afficher:
+                with st.container(border=True):
+                    cols = st.columns([1, 3, 2, 2, 2, 1])
+                    inclure = cols[0].checkbox("Inclure", value=True, key=f"chk_{d['id']}")
+                    if inclure:
+                        devis_selectionnes.append(d)
+                    
+                    cols[1].write(f"**{d['categorie']}** — {d['description'] or ''}")
+                    cols[2].write(fmt_eur(d["montant"]))
+                    
+                    nouveau_statut = cols[3].selectbox(
+                        "Statut", ["Devis reçu", "Devis signé", "En cours", "Terminé / payé"],
+                        index=["Devis reçu", "Devis signé", "En cours", "Terminé / payé"].index(d["statut"])
+                        if d["statut"] in ["Devis reçu", "Devis signé", "En cours", "Terminé / payé"] else 0,
+                        key=f"statut_{d['id']}", label_visibility="collapsed"
                     )
-                else:
-                    cols[3].caption("Pas de PDF")
-                cols[4].caption(f"+VA: {fmt_eur(d['valeur_ajoutee'])}")
-                if cols[5].button("🗑️", key=f"del_{d['id']}"):
-                    delete_devis(d["id"])
-                    st.rerun()
+                    if nouveau_statut != d["statut"]:
+                        update_devis_statut(d["id"], nouveau_statut)
+                        st.rerun()
+                        
+                    if d["pdf_data"]:
+                        cols[4].download_button(
+                            "📄 PDF", data=d["pdf_data"], file_name=d["pdf_nom"] or "devis.pdf",
+                            key=f"dl_{d['id']}",
+                        )
+                    else:
+                        cols[4].caption("Pas de PDF")
+                        
+                    cols[5].caption(f"+VA: {fmt_eur(d['valeur_ajoutee'])}")
+                    if cols[5].button("🗑️", key=f"del_{d['id']}"):
+                        delete_devis(d["id"])
+                        st.rerun()
 
-        df_devis = pd.DataFrame([dict(d) for d in devis_rows])
-        st.divider()
-        st.caption(f"**Total travaux : {fmt_eur(df_devis['montant'].sum())}**")
-        fig = px.pie(df_devis, values="montant", names="categorie", title="Répartition du budget travaux")
-        st.plotly_chart(fig, use_container_width=True)
-
+            total_selectionne = sum(d["montant"] or 0 for d in devis_selectionnes)
+            st.divider()
+            st.metric("Total des travaux validés (sélectionnés)", fmt_eur(total_selectionne))
+            
+            df_devis = pd.DataFrame([dict(d) for d in devis_rows])
+            fig = px.pie(df_devis, values="montant", names="categorie", title="Répartition du budget travaux global")
+            st.plotly_chart(fig, use_container_width=True)
 # ---- FINANCEMENT ----
 with tab_financement:
     st.subheader("Simulation de financement")
