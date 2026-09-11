@@ -79,8 +79,10 @@ def init_db():
         duree_annees INTEGER DEFAULT 20,
         taux_interet REAL DEFAULT 3.5,
         taux_assurance REAL DEFAULT 0.34,
-        revenus_mensuels REAL DEFAULT 0,
-        charges_mensuelles REAL DEFAULT 0
+        emprunteur_1_nom TEXT,
+        emprunteur_1_salaire REAL DEFAULT 0,
+        emprunteur_2_nom TEXT,
+        emprunteur_2_salaire REAL DEFAULT 0
     )""")
     c.execute("""CREATE TABLE IF NOT EXISTS revente (
         project_id INTEGER PRIMARY KEY,
@@ -90,46 +92,32 @@ def init_db():
         frais_divers REAL DEFAULT 0
     )""")
     
+    # Migrations colonnes devis
     existing_columns = [col["name"] for col in c.execute("PRAGMA table_info(devis)").fetchall()]
-    if "project_id" not in existing_columns:
-        c.execute("ALTER TABLE devis ADD COLUMN project_id INTEGER")
-    if "contact_id" not in existing_columns:
-        c.execute("ALTER TABLE devis ADD COLUMN contact_id INTEGER")
-    if "valeur_ajoutee" not in existing_columns:
-        c.execute("ALTER TABLE devis ADD COLUMN valeur_ajoutee REAL DEFAULT 0")
-    if "pdf_nom" not in existing_columns:
-        c.execute("ALTER TABLE devis ADD COLUMN pdf_nom TEXT")
-    if "pdf_data" not in existing_columns:
-        c.execute("ALTER TABLE devis ADD COLUMN pdf_data BLOB")
-    if "montant_ht" not in existing_columns:
-        c.execute("ALTER TABLE devis ADD COLUMN montant_ht REAL DEFAULT 0")
-    if "montant_ttc" not in existing_columns:
-        c.execute("ALTER TABLE devis ADD COLUMN montant_ttc REAL DEFAULT 0")
-    if "taux_tva" not in existing_columns:
-        c.execute("ALTER TABLE devis ADD COLUMN taux_tva REAL DEFAULT 20.0")
-    if "inclus" not in existing_columns:
-        c.execute("ALTER TABLE devis ADD COLUMN inclus INTEGER DEFAULT 1")
+    if "project_id" not in existing_columns: c.execute("ALTER TABLE devis ADD COLUMN project_id INTEGER")
+    if "contact_id" not in existing_columns: c.execute("ALTER TABLE devis ADD COLUMN contact_id INTEGER")
+    if "valeur_ajoutee" not in existing_columns: c.execute("ALTER TABLE devis ADD COLUMN valeur_ajoutee REAL DEFAULT 0")
+    if "pdf_nom" not in existing_columns: c.execute("ALTER TABLE devis ADD COLUMN pdf_nom TEXT")
+    if "pdf_data" not in existing_columns: c.execute("ALTER TABLE devis ADD COLUMN pdf_data BLOB")
+    if "montant_ht" not in existing_columns: c.execute("ALTER TABLE devis ADD COLUMN montant_ht REAL DEFAULT 0")
+    if "montant_ttc" not in existing_columns: c.execute("ALTER TABLE devis ADD COLUMN montant_ttc REAL DEFAULT 0")
+    if "taux_tva" not in existing_columns: c.execute("ALTER TABLE devis ADD COLUMN taux_tva REAL DEFAULT 20.0")
+    if "inclus" not in existing_columns: c.execute("ALTER TABLE devis ADD COLUMN inclus INTEGER DEFAULT 1")
 
-    existing_lignes_cols = [col["name"] for col in c.execute("PRAGMA table_info(devis_lignes)").fetchall()]
-    if "prix_unitaire_ht" not in existing_lignes_cols:
-        c.execute("ALTER TABLE devis_lignes ADD COLUMN prix_unitaire_ht REAL DEFAULT 0")
-    if "prix_unitaire_ttc" not in existing_lignes_cols:
-        c.execute("ALTER TABLE devis_lignes ADD COLUMN prix_unitaire_ttc REAL DEFAULT 0")
-    if "montant_ht" not in existing_lignes_cols:
-        c.execute("ALTER TABLE devis_lignes ADD COLUMN montant_ht REAL DEFAULT 0")
-    if "montant_ttc" not in existing_lignes_cols:
-        c.execute("ALTER TABLE devis_lignes ADD COLUMN montant_ttc REAL DEFAULT 0")
-    if "taux_tva" not in existing_lignes_cols:
-        c.execute("ALTER TABLE devis_lignes ADD COLUMN taux_tva REAL DEFAULT 20.0")
+    # Migrations table financement
+    fin_cols = [col["name"] for col in c.execute("PRAGMA table_info(financement)").fetchall()]
+    if "emprunteur_1_nom" not in fin_cols: c.execute("ALTER TABLE financement ADD COLUMN emprunteur_1_nom TEXT")
+    if "emprunteur_1_salaire" not in fin_cols: c.execute("ALTER TABLE financement ADD COLUMN emprunteur_1_salaire REAL DEFAULT 0")
+    if "emprunteur_2_nom" not in fin_cols: c.execute("ALTER TABLE financement ADD COLUMN emprunteur_2_nom TEXT")
+    if "emprunteur_2_salaire" not in fin_cols: c.execute("ALTER TABLE financement ADD COLUMN emprunteur_2_salaire REAL DEFAULT 0")
 
     conn.commit()
     conn.close()
 
-
 init_db()
 
 # ----------------------------------------------------------------------------
-# HELPERS PROJETS & CONTACTS
+# HELPERS PROJETS, CONTACTS & FINANCEMENT
 # ----------------------------------------------------------------------------
 
 def list_projects():
@@ -137,7 +125,6 @@ def list_projects():
     rows = conn.execute("SELECT * FROM projects ORDER BY id DESC").fetchall()
     conn.close()
     return rows
-
 
 def create_project(nom, type_, prix_achat, taux_notaire):
     conn = get_conn()
@@ -150,14 +137,11 @@ def create_project(nom, type_, prix_achat, taux_notaire):
     conn.close()
     return pid
 
-
-def update_project(pid, prix_achat=None, taux_notaire=None):
+def update_project_details(pid, nom, type_, prix_achat, taux_notaire):
     conn = get_conn()
-    if prix_achat is not None and taux_notaire is not None:
-        conn.execute("UPDATE projects SET prix_achat=?, taux_notaire=? WHERE id=?", (prix_achat, taux_notaire, pid))
+    conn.execute("UPDATE projects SET nom=?, type=?, prix_achat=?, taux_notaire=? WHERE id=?", (nom, type_, prix_achat, taux_notaire, pid))
     conn.commit()
     conn.close()
-
 
 def delete_project(pid):
     conn = get_conn()
@@ -169,13 +153,11 @@ def delete_project(pid):
     conn.commit()
     conn.close()
 
-
 def get_project(pid):
     conn = get_conn()
     row = conn.execute("SELECT * FROM projects WHERE id=?", (pid,)).fetchone()
     conn.close()
     return row
-
 
 def save_or_get_contact(project_id, nom_entreprise, adresse, telephone, email, siret):
     conn = get_conn()
@@ -202,20 +184,11 @@ def save_or_get_contact(project_id, nom_entreprise, adresse, telephone, email, s
     conn.close()
     return cid
 
-
 def list_contacts(project_id):
     conn = get_conn()
     rows = conn.execute("SELECT * FROM contacts WHERE project_id=?", (project_id,)).fetchall()
     conn.close()
     return rows
-
-
-def update_contact_name(contact_id, nouveau_nom):
-    conn = get_conn()
-    conn.execute("UPDATE contacts SET nom_entreprise=? WHERE id=?", (nouveau_nom, contact_id))
-    conn.commit()
-    conn.close()
-
 
 def update_contact_full(contact_id, nom_entreprise, telephone, email, siret, adresse):
     conn = get_conn()
@@ -226,6 +199,29 @@ def update_contact_full(contact_id, nom_entreprise, telephone, email, siret, adr
     conn.commit()
     conn.close()
 
+def get_financement(project_id):
+    conn = get_conn()
+    row = conn.execute("SELECT * FROM financement WHERE project_id=?", (project_id,)).fetchone()
+    conn.close()
+    if not row:
+        conn = get_conn()
+        conn.execute("INSERT INTO financement (project_id) VALUES (?)", (project_id,))
+        conn.commit()
+        conn.close()
+        conn = get_conn()
+        row = conn.execute("SELECT * FROM financement WHERE project_id=?", (project_id,)).fetchone()
+        conn.close()
+    return row
+
+def save_financement(project_id, apport, duree_annees, taux_interet, taux_assurance, e1_nom, e1_sal, e2_nom, e2_sal):
+    conn = get_conn()
+    conn.execute(
+        """UPDATE financement SET apport=?, duree_annees=?, taux_interet=?, taux_assurance=?, 
+           emprunteur_1_nom=?, emprunteur_1_salaire=?, emprunteur_2_nom=?, emprunteur_2_salaire=? WHERE project_id=?""",
+        (apport, duree_annees, taux_interet, taux_assurance, e1_nom, e1_sal, e2_nom, e2_sal, project_id)
+    )
+    conn.commit()
+    conn.close()
 
 def get_project_categories(project_id):
     defaults = ["Gros œuvre", "Extension", "Cuisine", "Salle de bain", "Électricité", "Plomberie", "Toiture", "Isolation", "Menuiserie", "Peinture / finitions", "Autre"]
@@ -239,7 +235,7 @@ def get_project_categories(project_id):
     return cats
 
 # ----------------------------------------------------------------------------
-# ANALYSE ET EXTRACTION INTELLIGENTE DU FICHIER
+# ANALYSE PDF / EXCEL
 # ----------------------------------------------------------------------------
 
 def parse_file_data(file_bytes, file_name):
@@ -255,28 +251,20 @@ def parse_file_data(file_bytes, file_name):
         try:
             with pdfplumber.open(_io.BytesIO(file_bytes)) as pdf:
                 for page in pdf.pages:
-                    tables = page.extract_tables()
-                    for table in tables:
+                    for table in page.extract_tables():
                         for row in table:
                             cells = [str(c).strip() for c in row if c is not None and str(c).strip() != ""]
                             if len(cells) >= 2:
                                 last_cell = cells[-1].replace(" ", "").replace("\xa0", "").replace("€", "").replace(",", ".")
                                 try:
                                     val_prix = float(last_cell)
-                                    if val_prix > 0 and val_prix < 500000:
+                                    if 0 < val_prix < 500000:
                                         desc = " - ".join(cells[:-1])
                                         if len(desc) > 2 and not any(kw in desc.lower() for kw in ["total", "tva", "net à payer"]):
-                                            lignes.append({
-                                                "designation": desc,
-                                                "quantite": 1.0,
-                                                "prix_unitaire_ttc": val_prix,
-                                                "montant_ttc": val_prix,
-                                                "taux_tva": 20.0
-                                            })
+                                            lignes.append({"designation": desc, "quantite": 1.0, "prix_unitaire_ttc": val_prix, "montant_ttc": val_prix, "taux_tva": 20.0})
                                 except ValueError:
                                     pass
-                    t = page.extract_text() or ""
-                    text_all += t + "\n"
+                    text_all += (page.extract_text() or "") + "\n"
         except Exception:
             pass
     elif file_name.endswith(('.xlsx', '.xls')):
@@ -286,21 +274,11 @@ def parse_file_data(file_bytes, file_name):
             for col in df_excel.columns:
                 for val in df_excel[col].dropna():
                     text_all += str(val) + "\n"
-            
-            for idx, row in df_excel.iterrows():
+            for _, row in df_excel.iterrows():
                 desc = str(row.iloc[0]) if pd.notna(row.iloc[0]) else ""
-                prix = None
-                for val in row.values:
-                    if isinstance(val, (int, float)) and val > 0 and val < 1000000:
-                        prix = float(val)
+                prix = next((float(val) for val in row.values if isinstance(val, (int, float)) and 0 < val < 1000000), None)
                 if desc and desc != "nan" and len(desc) > 3 and prix:
-                    lignes.append({
-                        "designation": desc,
-                        "quantite": 1.0,
-                        "prix_unitaire_ttc": prix,
-                        "montant_ttc": prix,
-                        "taux_tva": 20.0
-                    })
+                    lignes.append({"designation": desc, "quantite": 1.0, "prix_unitaire_ttc": prix, "montant_ttc": prix, "taux_tva": 20.0})
         except Exception:
             pass
 
@@ -309,77 +287,45 @@ def parse_file_data(file_bytes, file_name):
             ligne_str = ligne.strip()
             matches = re.findall(r"(\d{1,3}(?:[ \xA0]\d{3})*[.,]\d{2})\s*(?:€)?$", ligne_str)
             if matches:
-                prix_str = matches[-1].replace(" ", "").replace("\xa0", "").replace(",", ".")
                 try:
-                    p_val = float(prix_str)
+                    p_val = float(matches[-1].replace(" ", "").replace("\xa0", "").replace(",", "."))
                     if not any(kw in ligne_str.lower() for kw in ["total", "tva", "net à payer", "acompte", "solde"]):
-                        designation = ligne_str[:ligne_str.rfind(matches[-1])].strip()
-                        designation = re.sub(r"^[-\u2010-\u2015\d\.\)]+\s*", "", designation).strip()
+                        designation = re.sub(r"^[-\u2010-\u2015\d\.\)]+\s*", "", ligne_str[:ligne_str.rfind(matches[-1])]).strip()
                         if len(designation) > 3:
-                            lignes.append({
-                                "designation": designation,
-                                "quantite": 1.0,
-                                "prix_unitaire_ttc": p_val,
-                                "montant_ttc": p_val,
-                                "taux_tva": 20.0
-                            })
+                            lignes.append({"designation": designation, "quantite": 1.0, "prix_unitaire_ttc": p_val, "montant_ttc": p_val, "taux_tva": 20.0})
                 except ValueError:
                     pass
 
     match_tva = re.search(r"tva\D{0,5}(20|10|5\.5|5|2\.1|0)[,%]?", text_all, re.IGNORECASE)
     if match_tva:
-        t_val = match_tva.group(1).replace(",", ".")
         try:
-            taux_tva_detecte = float(t_val)
-            if taux_tva_detecte == 5:
-                taux_tva_detecte = 5.5
+            taux_tva_detecte = float(match_tva.group(1).replace(",", "."))
+            if taux_tva_detecte == 5: taux_tva_detecte = 5.5
         except ValueError:
             pass
 
-    candidates_ttc = re.findall(
-        r"(?:total\s*t\.?t\.?c\.?|net\s*à\s*payer)\D{0,15}([\d\s]{1,3}(?:[\d\s]{3})*[.,]\d{2})",
-        text_all, flags=re.IGNORECASE,
-    )
-    if not candidates_ttc:
-        candidates_ttc = re.findall(r"([\d\s]{1,3}(?:[\d\s]{3})*[.,]\d{2})\s*€", text_all)
+    candidates_ttc = re.findall(r"(?:total\s*t\.?t\.?c\.?|net\s*à\s*payer)\D{0,15}([\d\s]{1,3}(?:[\d\s]{3})*[.,]\d{2})", text_all, flags=re.IGNORECASE)
+    if not candidates_ttc: candidates_ttc = re.findall(r"([\d\s]{1,3}(?:[\d\s]{3})*[.,]\d{2})\s*€", text_all)
     if candidates_ttc:
-        raw = candidates_ttc[-1].replace(" ", "").replace("\xa0", "").replace(",", ".")
-        try:
-            amount_ttc = float(raw)
-        except ValueError:
-            amount_ttc = None
+        try: amount_ttc = float(candidates_ttc[-1].replace(" ", "").replace("\xa0", "").replace(",", "."))
+        except ValueError: pass
 
-    candidates_ht = re.findall(
-        r"total\s*h\.?t\.?\D{0,15}([\d\s]{1,3}(?:[\d\s]{3})*[.,]\d{2})",
-        text_all, flags=re.IGNORECASE,
-    )
+    candidates_ht = re.findall(r"total\s*h\.?t\.?\D{0,15}([\d\s]{1,3}(?:[\d\s]{3})*[.,]\d{2})", text_all, flags=re.IGNORECASE)
     if candidates_ht:
-        raw_ht = candidates_ht[-1].replace(" ", "").replace("\xa0", "").replace(",", ".")
-        try:
-            amount_ht = float(raw_ht)
-        except ValueError:
-            amount_ht = None
+        try: amount_ht = float(candidates_ht[-1].replace(" ", "").replace("\xa0", "").replace(",", "."))
+        except ValueError: pass
 
-    if amount_ttc and not amount_ht:
-        amount_ht = amount_ttc / (1 + taux_tva_detecte / 100.0)
-    elif amount_ht and not amount_ttc:
-        amount_ttc = amount_ht * (1 + taux_tva_detecte / 100.0)
+    if amount_ttc and not amount_ht: amount_ht = amount_ttc / (1 + taux_tva_detecte / 100.0)
+    elif amount_ht and not amount_ttc: amount_ttc = amount_ht * (1 + taux_tva_detecte / 100.0)
 
     match_tel = re.search(r"(?:tel|tél|t[ée]l\s*[:\.]?)\s*([\d\s\.\-\/\+]{8,})", text_all, re.IGNORECASE)
-    if match_tel:
-        contact_info["tel"] = match_tel.group(1).strip()
-
+    if match_tel: contact_info["tel"] = match_tel.group(1).strip()
     match_email = re.search(r"[\w\.-]+@[\w\.-]+\.\w+", text_all)
-    if match_email:
-        contact_info["email"] = match_email.group(0).strip()
-
+    if match_email: contact_info["email"] = match_email.group(0).strip()
     match_siret = re.search(r"siret\s*[:\.]?\s*([\d\s]{9,14})", text_all, re.IGNORECASE)
-    if match_siret:
-        contact_info["siret"] = match_siret.group(1).strip()
-
+    if match_siret: contact_info["siret"] = match_siret.group(1).strip()
     match_nom = re.search(r"([A-Z\s]{4,}\s(?:MACONNERIE|BTP|ENTREPRISE|SARL|SAS))", text_all)
-    if match_nom:
-        contact_info["nom"] = match_nom.group(1).strip()
+    if match_nom: contact_info["nom"] = match_nom.group(1).strip()
 
     for l in lignes:
         l["taux_tva"] = taux_tva_detecte
@@ -412,7 +358,6 @@ def add_devis(project_id, contact_id, categorie, description, montant_ht, montan
     conn.commit()
     conn.close()
 
-
 def list_devis(project_id):
     conn = get_conn()
     rows = conn.execute("""
@@ -423,7 +368,6 @@ def list_devis(project_id):
     conn.close()
     return rows
 
-
 def delete_devis(devis_id):
     conn = get_conn()
     conn.execute("DELETE FROM devis WHERE id=?", (devis_id,))
@@ -431,13 +375,11 @@ def delete_devis(devis_id):
     conn.commit()
     conn.close()
 
-
 def update_devis_statut(devis_id, statut):
     conn = get_conn()
     conn.execute("UPDATE devis SET statut=? WHERE id=?", (statut, devis_id))
     conn.commit()
     conn.close()
-
 
 def update_devis_categorie(devis_id, categorie):
     conn = get_conn()
@@ -445,13 +387,11 @@ def update_devis_categorie(devis_id, categorie):
     conn.commit()
     conn.close()
 
-
 def update_devis_description(devis_id, description):
     conn = get_conn()
     conn.execute("UPDATE devis SET description=? WHERE id=?", (description, devis_id))
     conn.commit()
     conn.close()
-
 
 def update_devis_inclus(devis_id, inclus):
     conn = get_conn()
@@ -459,13 +399,11 @@ def update_devis_inclus(devis_id, inclus):
     conn.commit()
     conn.close()
 
-
 def list_lignes_devis(devis_id):
     conn = get_conn()
     rows = conn.execute("SELECT * FROM devis_lignes WHERE devis_id=?", (devis_id,)).fetchall()
     conn.close()
     return rows
-
 
 def update_ligne_inclus(ligne_id, inclus):
     conn = get_conn()
@@ -473,27 +411,17 @@ def update_ligne_inclus(ligne_id, inclus):
     conn.commit()
     conn.close()
 
-
 def add_ligne_devis(devis_id, designation, quantite, prix_saisi, mode_saisi, taux_tva):
     conn = get_conn()
-    if mode_saisi == "HT":
-        prix_ht = prix_saisi
-        prix_ttc = prix_saisi * (1 + taux_tva / 100.0)
-    else:
-        prix_ttc = prix_saisi
-        prix_ht = prix_saisi / (1 + taux_tva / 100.0)
-
-    montant_ht = quantite * prix_ht
-    montant_ttc = quantite * prix_ttc
-
+    prix_ht = prix_saisi if mode_saisi == "HT" else prix_saisi / (1 + taux_tva / 100.0)
+    prix_ttc = prix_saisi * (1 + taux_tva / 100.0) if mode_saisi == "HT" else prix_saisi
     conn.execute(
         """INSERT INTO devis_lignes (devis_id, designation, quantite, prix_unitaire_ht, prix_unitaire_ttc, montant_ht, montant_ttc, taux_tva, inclus)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)""",
-        (devis_id, designation, quantite, prix_ht, prix_ttc, montant_ht, montant_ttc, taux_tva)
+        (devis_id, designation, quantite, prix_ht, prix_ttc, quantite * prix_ht, quantite * prix_ttc, taux_tva)
     )
     conn.commit()
     conn.close()
-
 
 def delete_ligne_devis(ligne_id):
     conn = get_conn()
@@ -501,11 +429,9 @@ def delete_ligne_devis(ligne_id):
     conn.commit()
     conn.close()
 
-
 def get_total_travaux_valides(pid):
     devis_rows = list_devis(pid)
-    total_ht = 0.0
-    total_ttc = 0.0
+    total_ht, total_ttc = 0.0, 0.0
     for d in devis_rows:
         if d["inclus"] == 1:
             lignes = list_lignes_devis(d["id"])
@@ -557,49 +483,66 @@ if not current_pid:
     st.stop()
 
 project = get_project(current_pid)
+financement = get_financement(current_pid)
 available_categories = get_project_categories(current_pid)
 
-tab_achat, tab_devis, tab_contacts, tab_dashboard = st.tabs(["🏡 Achat", "🧾 Devis & Lignes", "📇 Contacts", "📊 Dashboard"])
+tab_achat, tab_financement, tab_devis, tab_contacts, tab_dashboard = st.tabs(["🏡 Projet & Achat", "💰 Financement", "🧾 Devis", "📇 Contacts", "📊 Dashboard"])
 
 with tab_achat:
-    st.subheader("Paramètres d'achat")
-    c1, c2 = st.columns(2)
-    with c1:
-        prix_achat = st.number_input("Prix d'achat (€)", min_value=0.0, step=1000.0, value=float(project["prix_achat"]))
-    with c2:
-        taux_notaire = st.number_input("Frais de notaire (%)", min_value=0.0, max_value=15.0, value=float(project["taux_notaire"]), step=0.1)
-    if st.button("Enregistrer l'achat"):
-        update_project(current_pid, prix_achat=prix_achat, taux_notaire=taux_notaire)
-        st.success("Mis à jour.")
-        st.rerun()
+    st.subheader("Paramètres généraux du projet et d'achat")
+    with st.form("form_edit_project"):
+        edit_nom = st.text_input("Nom du projet", value=project["nom"] or "")
+        edit_type = st.selectbox("Type de projet", ["Achat maison", "Extension / travaux seuls"], index=0 if project["type"]=="Achat maison" else 1)
+        edit_prix = st.number_input("Prix d'achat (€)", min_value=0.0, step=1000.0, value=float(project["prix_achat"]))
+        edit_notaire = st.number_input("Frais de notaire (%)", min_value=0.0, max_value=15.0, value=float(project["taux_notaire"]), step=0.1)
+        
+        if st.form_submit_button("Modifier le projet"):
+            update_project_details(current_pid, edit_nom, edit_type, edit_prix, edit_notaire)
+            st.success("Projet mis à jour avec succès !")
+            st.rerun()
+
+with tab_financement:
+    st.subheader("Paramètres de financement & Emprunteurs")
+    with st.form("form_financement_details"):
+        st.markdown("#### 👥 Emprunteurs et Salaires mensuels")
+        col_e1, col_e2 = st.columns(2)
+        with col_e1:
+            e1_nom = st.text_input("Nom Emprunteur 1", value=financement["emprunteur_1_nom"] or "")
+            e1_sal = st.number_input("Salaire net mensuel Emprunteur 1 (€)", min_value=0.0, step=100.0, value=float(financement["emprunteur_1_salaire"] or 0))
+        with col_e2:
+            e2_nom = st.text_input("Nom Emprunteur 2", value=financement["emprunteur_2_nom"] or "")
+            e2_sal = st.number_input("Salaire net mensuel Emprunteur 2 (€)", min_value=0.0, step=100.0, value=float(financement["emprunteur_2_salaire"] or 0))
+        
+        st.markdown("#### 🏦 Conditions du prêt")
+        col_f1, col_f2, col_f3, col_f4 = st.columns(4)
+        apport = col_f1.number_input("Apport personnel (€)", min_value=0.0, step=1000.0, value=float(financement["apport"] or 0))
+        duree_ans = col_f2.number_input("Durée du prêt (années)", min_value=1, max_value=35, value=int(financement["duree_annees"] or 20))
+        taux_interet = col_f3.number_input("Taux d'intérêt annuel (%)", min_value=0.0, max_value=10.0, value=float(financement["taux_interet"] or 3.5), step=0.05)
+        taux_assurance = col_f4.number_input("Taux assurance annuel (%)", min_value=0.0, max_value=3.0, value=float(financement["taux_assurance"] or 0.34), step=0.01)
+
+        if st.form_submit_button("Enregistrer le financement"):
+            save_financement(current_pid, apport, duree_ans, taux_interet, taux_assurance, e1_nom, e1_sal, e2_nom, e2_sal)
+            st.success("Financement enregistré avec succès !")
+            st.rerun()
 
 with tab_devis:
     st.subheader("Importation de devis et gestion des choix")
     uploaded_file = st.file_uploader("Importer un devis (PDF ou Excel)", type=["pdf", "xlsx", "xls"])
     
-    montant_ht_detecte = None
-    montant_ttc_detecte = None
-    taux_tva_detecte = 20.0
-    lignes_extraites = []
-    contact_detecte = {}
+    montant_ht_detecte, montant_ttc_detecte, taux_tva_detecte, lignes_extraites, contact_detecte = None, None, 20.0, [], {}
 
     if uploaded_file is not None:
         montant_ht_detecte, montant_ttc_detecte, taux_tva_detecte, _, lignes_extraites, contact_detecte = parse_file_data(uploaded_file.getvalue(), uploaded_file.name)
         if montant_ttc_detecte:
             st.info(f"Détecté - HT : {montant_ht_detecte:,.2f} € | TVA : {taux_tva_detecte}% | TTC : {montant_ttc_detecte:,.2f} €")
         if lignes_extraites:
-            st.success(f"🔍 {len(lignes_extraites)} ligne(s) détectée(s) automatiquement.")
-        else:
-            st.warning("⚠️ Aucune ligne détectée automatiquement. Ajoutez-les manuellement.")
+            st.success(f"🔍 {len(lignes_extraites)} ligne(s) détectée(s).")
 
     with st.form("form_devis", clear_on_submit=True):
         col1, col2 = st.columns(2)
         with col1:
             choix_cat = st.selectbox("Catégorie", available_categories + ["➕ Ajouter une nouvelle catégorie..."])
-            nouvelle_cat = ""
-            if choix_cat == "➕ Ajouter une nouvelle catégorie...":
-                nouvelle_cat = st.text_input("Nom de la nouvelle catégorie")
-            
+            nouvelle_cat = st.text_input("Nom de la nouvelle catégorie") if choix_cat == "➕ Ajouter une nouvelle catégorie..." else ""
             description = st.text_input("Description générale", value=uploaded_file.name if uploaded_file else "")
             nom_artisan = st.text_input("Nom de l'entreprise", value=contact_detecte.get("nom", ""))
         with col2:
@@ -613,8 +556,7 @@ with tab_devis:
 
         if st.form_submit_button("Enregistrer le devis"):
             cat_finale = nouvelle_cat.strip() if choix_cat == "➕ Ajouter une nouvelle catégorie..." and nouvelle_cat.strip() else choix_cat
-            if cat_finale == "➕ Ajouter une nouvelle catégorie...":
-                cat_finale = "Autre"
+            if cat_finale == "➕ Ajouter une nouvelle catégorie...": cat_finale = "Autre"
 
             pdf_bytes = uploaded_file.getvalue() if uploaded_file is not None else None
             pdf_nom = uploaded_file.name if uploaded_file is not None else None
@@ -626,19 +568,11 @@ with tab_devis:
 
             cid = save_or_get_contact(current_pid, nom_artisan, contact_detecte.get("adresse", ""), contact_detecte.get("tel", ""), contact_detecte.get("email", ""), contact_detecte.get("siret", ""))
             
-            lignes_a_sauver = []
-            if lignes_extraites:
-                lignes_a_sauver = lignes_extraites
-            else:
-                lignes_a_sauver = [{
-                    "designation": description or "Global", 
-                    "quantite": 1.0, 
-                    "prix_unitaire_ht": montant_ht_saisi, 
-                    "prix_unitaire_ttc": montant_ttc_saisi,
-                    "montant_ht": montant_ht_saisi,
-                    "montant_ttc": montant_ttc_saisi,
-                    "taux_tva": taux_tva_global
-                }]
+            lignes_a_sauver = lignes_extraites if lignes_extraites else [{
+                "designation": description or "Global", "quantite": 1.0, 
+                "prix_unitaire_ht": montant_ht_saisi, "prix_unitaire_ttc": montant_ttc_saisi,
+                "montant_ht": montant_ht_saisi, "montant_ttc": montant_ttc_saisi, "taux_tva": taux_tva_global
+            }]
             
             add_devis(current_pid, cid, cat_finale, description, montant_ht_saisi, montant_ttc_saisi, taux_tva_global, statut, valeur_ajoutee, pdf_nom, pdf_bytes, lignes_a_sauver)
             st.success("Enregistré avec succès !")
@@ -654,7 +588,6 @@ with tab_devis:
         for d in devis_rows:
             with st.container(border=True):
                 c_inc, c1, c2, c3, c4 = st.columns([1, 3, 2, 2, 1])
-                
                 inclus_devis = c_inc.checkbox("Actif", value=bool(d["inclus"]), key=f"inc_devis_{d['id']}")
                 if inclus_devis != bool(d["inclus"]):
                     update_devis_inclus(d["id"], inclus_devis)
@@ -662,14 +595,8 @@ with tab_devis:
 
                 all_cats = get_project_categories(current_pid)
                 current_cat_idx = all_cats.index(d["categorie"]) if d["categorie"] in all_cats else 0
+                selected_cat = c1.selectbox("Catégorie", all_cats + ["➕ Autre..."], index=current_cat_idx if d["categorie"] in all_cats else 0, key=f"cat_select_{d['id']}", label_visibility="collapsed")
                 
-                selected_cat = c1.selectbox(
-                    "Catégorie", 
-                    all_cats + ["➕ Autre..."], 
-                    index=current_cat_idx if d["categorie"] in all_cats else 0, 
-                    key=f"cat_select_{d['id']}",
-                    label_visibility="collapsed"
-                )
                 if selected_cat == "➕ Autre...":
                     new_c_input = c1.text_input("Nouvelle catégorie", key=f"new_cat_input_{d['id']}")
                     if new_c_input and new_c_input != d["categorie"]:
@@ -685,7 +612,7 @@ with tab_devis:
                         edit_desc = st.text_input("Description générale", value=d["description"] or "")
                         if st.form_submit_button("Enregistrer"):
                             if d["contact_id"]:
-                                update_contact_name(d["contact_id"], edit_nom_ent)
+                                update_contact_name(d["contact_id"], edit_nom_ent) if 'update_contact_name' in globals() else None
                             else:
                                 cid = save_or_get_contact(current_pid, edit_nom_ent, "", "", "", "")
                                 conn = get_conn()
@@ -696,14 +623,11 @@ with tab_devis:
                             st.success("Mis à jour !")
                             st.rerun()
 
-                c1.caption(f"📁 Fichier : {d['pdf_nom'] or 'Aucun'}")
-                c1.caption(f"🏢 **{d['nom_entreprise'] or 'Artisan / Fournisseur'}**")
-                c1.caption(f"📝 *{d['description'] or 'Sans description'}*")
+                c1.caption(f"📁 {d['pdf_nom'] or 'Aucun fichier'} | 🏢 **{d['nom_entreprise'] or 'Artisan'}** | 📝 *{d['description'] or ''}*")
                 
                 lignes = list_lignes_devis(d["id"])
                 tot_ht_devis = sum(l["montant_ht"] for l in lignes if l["inclus"] == 1) if lignes else (d["montant_ht"] if d["inclus"]==1 else 0)
                 tot_ttc_devis = sum(l["montant_ttc"] for l in lignes if l["inclus"] == 1) if lignes else (d["montant_ttc"] if d["inclus"]==1 else 0)
-                
                 c2.markdown(f"**Sous-total Devis**\n- HT : **{tot_ht_devis:,.2f} €**\n- TTC : **{tot_ttc_devis:,.2f} €**")
                 
                 nouveau_statut = c3.selectbox("Statut", ["Devis reçu", "Devis signé", "En cours", "Terminé / payé"], index=["Devis reçu", "Devis signé", "En cours", "Terminé / payé"].index(d["statut"]) if d["statut"] in ["Devis reçu", "Devis signé", "En cours", "Terminé / payé"] else 0, key=f"statut_{d['id']}", label_visibility="collapsed")
@@ -716,90 +640,50 @@ with tab_devis:
                     st.rerun()
 
                 pdf_key = f"show_pdf_{d['id']}"
-                if pdf_key not in st.session_state:
-                    st.session_state[pdf_key] = False
+                if pdf_key not in st.session_state: st.session_state[pdf_key] = False
 
-                col_btn1, _ = st.columns([2, 5])
-                if d["pdf_data"]:
-                    if col_btn1.button("👁️ Afficher PDF & Gérer les lignes", key=f"btn_toggle_{d['id']}"):
-                        st.session_state[pdf_key] = not st.session_state[pdf_key]
-                        st.rerun()
-                else:
-                    col_btn1.caption("Aucun PDF joint")
-                    if col_btn1.button("✍️ Gérer les lignes", key=f"btn_toggle_nopdf_{d['id']}"):
-                        st.session_state[pdf_key] = not st.session_state[pdf_key]
-                        st.rerun()
+                if c1.button("👁️ Voir détails & lignes", key=f"btn_toggle_{d['id']}"):
+                    st.session_state[pdf_key] = not st.session_state[pdf_key]
+                    st.rerun()
 
                 if st.session_state[pdf_key]:
                     st.markdown("---")
                     col_pdf, col_form = st.columns(2)
-                    
                     with col_pdf:
                         st.markdown("#### 📄 Document original")
                         if d["pdf_data"]:
                             base64_pdf = base64.b64encode(d["pdf_data"]).decode('utf-8')
-                            pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="500px" type="application/pdf"></iframe>'
-                            st.markdown(pdf_display, unsafe_allow_html=True)
-                            st.download_button("📥 Télécharger le PDF", data=d["pdf_data"], file_name=d["pdf_nom"] or "devis.pdf", key=f"dl_side_{d['id']}")
+                            st.markdown(f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="400px" type="application/pdf"></iframe>', unsafe_allow_html=True)
                         else:
                             st.info("Aucun PDF associé.")
-
                     with col_form:
-                        st.markdown(f"#### ✍️ Lignes du devis : {d['nom_entreprise']}")
-                        if lignes:
-                            for l in lignes:
-                                cols_l = st.columns([1, 3, 2, 1, 1])
-                                inclus_actuel = cols_l[0].checkbox("Inc.", value=bool(l["inclus"]), key=f"ligne_{l['id']}")
-                                if inclus_actuel != bool(l["inclus"]):
-                                    update_ligne_inclus(l["id"], inclus_actuel)
-                                    st.rerun()
-                                cols_l[1].write(l["designation"])
-                                cols_l[2].write(f"HT:{l['montant_ht']:,.2f}€\nTTC:{l['montant_ttc']:,.2f}€")
-                                cols_l[3].write(f"{l['taux_tva']}%")
-                                if cols_l[4].button("❌", key=f"delligne_{l['id']}"):
-                                    delete_ligne_devis(l["id"])
-                                    st.rerun()
-
-                        with st.form(key=f"form_add_ligne_side_{d['id']}"):
-                            st.markdown("**Ajouter une ligne manuellement**")
-                            des_manuelle = st.text_input("Désignation", key=f"desc_{d['id']}")
-                            
-                            col_q, col_p, col_mode, col_tva = st.columns(4)
-                            qte_manuelle = col_q.number_input("Qté", min_value=0.1, value=1.0, step=1.0, key=f"qte_{d['id']}")
-                            prix_manuelle = col_p.number_input("Prix", min_value=0.0, step=10.0, key=f"prix_{d['id']}")
-                            mode_saisi = col_mode.selectbox("Type", ["TTC", "HT"], key=f"mode_{d['id']}")
-                            taux_ligne = col_tva.selectbox("TVA", [20.0, 10.0, 5.5, 0.0], key=f"tva_{d['id']}")
-                            
-                            if st.form_submit_button("Ajouter la ligne"):
-                                if des_manuelle and prix_manuelle > 0:
-                                    add_ligne_devis(d["id"], des_manuelle, qte_manuelle, prix_manuelle, mode_saisi, taux_ligne)
-                                    st.success("Ligne ajoutée !")
-                                    st.rerun()
-                                else:
-                                    st.error("Renseignez la désignation et le prix.")
-                    st.markdown("---")
-                else:
-                    if lignes:
-                        st.markdown("*Lignes rattachées :*")
+                        st.markdown("#### ✍️ Lignes du devis")
                         for l in lignes:
-                            cols_l = st.columns([1, 4, 2, 1, 1])
-                            inclus_actuel = cols_l[0].checkbox("Inc.", value=bool(l["inclus"]), key=f"ligne_normal_{l['id']}")
+                            cols_l = st.columns([1, 3, 2, 1, 1])
+                            inclus_actuel = cols_l[0].checkbox("Inc.", value=bool(l["inclus"]), key=f"ligne_{l['id']}")
                             if inclus_actuel != bool(l["inclus"]):
                                 update_ligne_inclus(l["id"], inclus_actuel)
                                 st.rerun()
                             cols_l[1].write(l["designation"])
-                            cols_l[2].write(f"HT: {l['montant_ht']:,.2f} € | TTC: {l['montant_ttc']:,.2f} €")
+                            cols_l[2].write(f"{l['montant_ttc']:,.2f}€ TTC")
                             cols_l[3].write(f"{l['taux_tva']}%")
-                            if cols_l[4].button("❌", key=f"delligne_normal_{l['id']}"):
+                            if cols_l[4].button("❌", key=f"delligne_{l['id']}"):
                                 delete_ligne_devis(l["id"])
                                 st.rerun()
-
-        tot_g_ht, tot_g_ttc = get_total_travaux_valides(current_pid)
-        st.divider()
-        st.metric("Total cumulé des travaux (selon devis et lignes cochés)", f"HT : {tot_g_ht:,.2f} €  |  TTC : {tot_g_ttc:,.2f} €")
+                        with st.form(key=f"form_add_ligne_{d['id']}"):
+                            des_m = st.text_input("Désignation", key=f"desc_{d['id']}")
+                            cq, cp, cm, ct = st.columns(4)
+                            q_m = cq.number_input("Qté", min_value=0.1, value=1.0, key=f"qte_{d['id']}")
+                            p_m = cp.number_input("Prix", min_value=0.0, key=f"prix_{d['id']}")
+                            mode_m = cm.selectbox("Type", ["TTC", "HT"], key=f"mode_{d['id']}")
+                            tva_m = ct.selectbox("TVA", [20.0, 10.0, 5.5, 0.0], key=f"tva_{d['id']}")
+                            if st.form_submit_button("Ajouter"):
+                                if des_m and p_m > 0:
+                                    add_ligne_devis(d["id"], des_m, q_m, p_m, mode_m, tva_m)
+                                    st.rerun()
 
 with tab_contacts:
-    st.subheader("Gestion des contacts (Entreprise, Tél, Email, SIRET, Adresse)")
+    st.subheader("Gestion des contacts")
     contacts = list_contacts(current_pid)
     if not contacts:
         st.info("Aucun contact.")
@@ -809,29 +693,93 @@ with tab_contacts:
                 st.write(f"### 🏢 {c['nom_entreprise']}")
                 st.write(f"**Tél** : {c['telephone'] or 'Non renseigné'} | **Email** : {c['email'] or 'Non renseigné'} | **SIRET** : {c['siret'] or 'Non renseigné'}")
                 st.write(f"**Adresse** : {c['adresse'] or 'Non renseignée'}")
-                
-                with st.expander(f"✏️ Modifier ce contact ({c['nom_entreprise']})"):
+                with st.expander(f"✏️ Modifier ce contact"):
                     with st.form(key=f"form_edit_contact_{c['id']}"):
-                        n_nom = st.text_input("Nom de l'entreprise", value=c["nom_entreprise"] or "")
+                        n_nom = st.text_input("Nom entreprise", value=c["nom_entreprise"] or "")
                         col_c1, col_c2, col_c3 = st.columns(3)
                         n_tel = col_c1.text_input("Tél", value=c["telephone"] or "")
                         n_email = col_c2.text_input("Email", value=c["email"] or "")
                         n_siret = col_c3.text_input("SIRET", value=c["siret"] or "")
                         n_adresse = st.text_area("Adresse", value=c["adresse"] or "")
-                        
-                        if st.form_submit_button("Enregistrer les modifications"):
+                        if st.form_submit_button("Enregistrer"):
                             update_contact_full(c["id"], n_nom, n_tel, n_email, n_siret, n_adresse)
-                            st.success("Contact mis à jour avec succès !")
+                            st.success("Mis à jour !")
                             st.rerun()
 
 with tab_dashboard:
-    st.subheader("Synthèse financière (basée sur vos sélections)")
+    st.subheader(f"📊 Dashboard Financier Complet : {project['nom']}")
+    
+    # Récupération des valeurs
+    prix_achat = float(project["prix_achat"] or 0)
+    taux_notaire = float(project["taux_notaire"] or 7.5)
+    frais_notaire = prix_achat * taux_notaire / 100
+    
     tot_travaux_ht, tot_travaux_ttc = get_total_travaux_valides(current_pid)
-    frais_notaire = project["prix_achat"] * project["taux_notaire"] / 100
-    cout_total_ht = project["prix_achat"] + frais_notaire + tot_travaux_ht
-    cout_total_ttc = project["prix_achat"] + frais_notaire + tot_travaux_ttc
+    
+    # Coût total du projet avant emprunt (acquisition + notaire + travaux TTC)
+    investissement_total = prix_achat + frais_notaire + tot_travaux_ttc
+    
+    apport = float(financement["apport"] or 0)
+    montant_emprunt = max(0.0, investissement_total - apport)
+    
+    duree_ans = int(financement["duree_annees"] or 20)
+    nb_mois = duree_ans * 12
+    taux_annuel = float(financement["taux_interet"] or 3.5) / 100.0
+    taux_assurance_annuel = float(financement["taux_assurance"] or 0.34) / 100.0
+    
+    # Calcul des mensualités et coûts du crédit
+    if taux_annuel > 0:
+        taux_mensuel = taux_annuel / 12.0
+        mensualite_hc = montant_emprunt * (taux_mensuel * (1 + taux_mensuel)**nb_mois) / ((1 + taux_mensuel)**nb_mois - 1)
+    else:
+        mensualite_hc = montant_emprunt / nb_mois if nb_mois > 0 else 0
+        
+    total_interets = (mensualite_hc * nb_mois) - montant_emprunt if montant_emprunt > 0 else 0
+    assurance_mensuelle = (montant_emprunt * taux_assurance_annuel) / 12.0
+    total_assurance = assurance_mensuelle * nb_mois
+    
+    mensualite_totale = mensualite_hc + assurance_mensuelle
+    cout_total_credit = total_interets + total_assurance
+    cout_global_projet = investissement_total + cout_total_credit
 
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Prix d'achat", f"{project['prix_achat']:,.2f} €")
-    c2.metric("Frais de notaire", f"{frais_notaire:,.2f} €")
-    c3.metric("Coût total projet", f"HT : {cout_total_ht:,.2f} €\nTTC : {cout_total_ttc:,.2f} €")
+    # Affichage des métriques clés
+    col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+    col_m1.metric("Prix d'achat", f"{prix_achat:,.2f} €")
+    col_m2.metric("Frais de notaire", f"{frais_notaire:,.2f} €")
+    col_m3.metric("Travaux (TTC sélectionnés)", f"{tot_travaux_ttc:,.2f} €")
+    col_m4.metric("Coût Global du Projet", f"{cout_global_projet:,.2f} €", help="Achat + Notaire + Travaux + Intérêts + Assurance")
+
+    st.divider()
+    
+    col_d1, col_d2 = st.columns(2)
+    
+    with col_d1:
+        st.markdown("### 👥 Emprunteurs & Salaires")
+        e1_nom = financement["emprunteur_1_nom"] or "Emprunteur 1"
+        e1_sal = float(financement["emprunteur_1_salaire"] or 0)
+        e2_nom = financement["emprunteur_2_nom"] or "Emprunteur 2"
+        e2_sal = float(financement["emprunteur_2_salaire"] or 0)
+        total_salaires = e1_sal + e2_sal
+        
+        st.write(f"- **{e1_nom}** : {e1_sal:,.2f} € / mois")
+        if e2_sal > 0 or e2_nom != "Emprunteur 2":
+            st.write(f"- **{e2_nom}** : {e2_sal:,.2f} € / mois")
+            st.write(f"- **Total revenus du foyer** : **{total_salaires:,.2f} € / mois**")
+            if total_salaires > 0:
+                taux_endettement = (mensualite_totale / total_salaires) * 100
+                st.write(f"- **Taux d'endettement estimé** : **{taux_endettement:.1f}%** (Mensualité : {mensualite_totale:,.2f} €/mois)")
+        else:
+            if e1_sal > 0:
+                taux_endettement = (mensualite_totale / e1_sal) * 100
+                st.write(f"- **Taux d'endettement estimé** : **{taux_endettement:.1f}%** (Mensualité : {mensualite_totale:,.2f} €/mois)")
+
+    with col_d2:
+        st.markdown("### 🏦 Détail du Financement & Prêt")
+        st.write(- **Investissement total (hors crédit)**: f"{investissement_total:,.2f} €")
+        st.write(f"- **Apport personnel** : {apport:,.2f} €")
+        st.write(f"- **Montant emprunté** : {montant_emprunt:,.2f} €")
+        st.write(f"- **Durée du prêt** : {duree_ans} ans ({nb_mois} mois)")
+        st.write(f"- **Taux d'intérêt** : {financement['taux_interet']}% | **Assurance** : {financement['taux_assurance']}%")
+        st.write(f"- **Coût total des intérêts** : {total_interets:,.2f} €")
+        st.write(f"- **Coût total de l'assurance** : {total_assurance:,.2f} €")
+        st.write(f"- **Coût total du crédit** : **{cout_total_credit:,.2f} €**")
