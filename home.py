@@ -17,7 +17,7 @@ DB_PATH = "immo_projet.db"
 st.set_page_config(page_title="Gestion Achat Immo & Devis", layout="wide", page_icon="🏠")
 
 # ----------------------------------------------------------------------------
-# BASE DE DONNÉES
+# BASE DE DONNÉES & MIGRATIONS
 # ----------------------------------------------------------------------------
 
 def get_conn():
@@ -84,6 +84,20 @@ def init_db():
         duree_detention_annees REAL DEFAULT 5,
         frais_divers REAL DEFAULT 0
     )""")
+    
+    # Migration sécurisée pour les bases existantes
+    existing_columns = [col["name"] for col in c.execute("PRAGMA table_info(devis)").fetchall()]
+    if "project_id" not in existing_columns:
+        c.execute("ALTER TABLE devis ADD COLUMN project_id INTEGER")
+    if "contact_id" not in existing_columns:
+        c.execute("ALTER TABLE devis ADD COLUMN contact_id INTEGER")
+    if "valeur_ajoutee" not in existing_columns:
+        c.execute("ALTER TABLE devis ADD COLUMN valeur_ajoutee REAL DEFAULT 0")
+    if "pdf_nom" not in existing_columns:
+        c.execute("ALTER TABLE devis ADD COLUMN pdf_nom TEXT")
+    if "pdf_data" not in existing_columns:
+        c.execute("ALTER TABLE devis ADD COLUMN pdf_data BLOB")
+
     conn.commit()
     conn.close()
 
@@ -111,6 +125,14 @@ def create_project(nom, type_, prix_achat, taux_notaire):
     pid = conn.execute("SELECT last_insert_rowid() as id").fetchone()["id"]
     conn.close()
     return pid
+
+
+def update_project(pid, prix_achat=None, taux_notaire=None):
+    conn = get_conn()
+    if prix_achat is not None and taux_notaire is not None:
+        conn.execute("UPDATE projects SET prix_achat=?, taux_notaire=? WHERE id=?", (prix_achat, taux_notaire, pid))
+    conn.commit()
+    conn.close()
 
 
 def delete_project(pid):
@@ -164,7 +186,7 @@ def list_contacts(project_id):
     return rows
 
 # ----------------------------------------------------------------------------
-# ANALYSE ET EXTRACTION INTELLIGENTE DU FICHIER (CONTACTS, LIGNES, MONTANT)
+# ANALYSE ET EXTRACTION INTELLIGENTE DU FICHIER
 # ----------------------------------------------------------------------------
 
 def parse_file_data(file_bytes, file_name):
@@ -206,7 +228,6 @@ def parse_file_data(file_bytes, file_name):
         except Exception:
             pass
 
-    # Extraction du montant TTC global
     candidates = re.findall(
         r"(?:total\s*t\.?t\.?c\.?|net\s*à\s*payer)\D{0,15}([\d\s]{1,3}(?:[\d\s]{3})*[.,]\d{2})",
         text_all, flags=re.IGNORECASE,
@@ -220,7 +241,6 @@ def parse_file_data(file_bytes, file_name):
         except ValueError:
             amount = None
 
-    # Extraction des coordonnées de l'artisan
     match_tel = re.search(r"(?:tel|tél|t[ée]l\s*[:\.]?)\s*([\d\s\.\-\/\+]{8,})", text_all, re.IGNORECASE)
     if match_tel:
         contact_info["tel"] = match_tel.group(1).strip()
@@ -233,16 +253,10 @@ def parse_file_data(file_bytes, file_name):
     if match_siret:
         contact_info["siret"] = match_siret.group(1).strip()
 
-    # Recherche de nom d'entreprise spécifique ou par défaut
-    if "MARCOVECCHIO" in text_all.upper():
-        contact_info["nom"] = "MARCOVECCHIO MACONNERIE"
-        contact_info["adresse"] = "9 Lotissement HAUT BUGEY - 01460 PORT"
-    else:
-        match_nom = re.search(r"([A-Z\s]{4,}\s(?:MACONNERIE|BTP|ENTREPRISE|SARL|SAS))", text_all)
-        if match_nom:
-            contact_info["nom"] = match_nom.group(1).strip()
+    match_nom = re.search(r"([A-Z\s]{4,}\s(?:MACONNERIE|BTP|ENTREPRISE|SARL|SAS))", text_all)
+    if match_nom:
+        contact_info["nom"] = match_nom.group(1).strip()
 
-    # Extraction heuristique des lignes de devis textuelles si PDF et non structuré
     if file_name.endswith('.pdf') and not lignes:
         for ligne in text_all.split("\n"):
             match_prix = re.search(r"([\d\s]{1,3}(?:[\d\s]{3})*[.,]\d{2})\s*(?:€)?$", ligne)
@@ -446,7 +460,6 @@ with tab_devis:
                 c1, c2, c3, c4 = st.columns([3, 2, 2, 1])
                 c1.write(f"**{d['categorie']}** — {d['nom_entreprise']}")
                 
-                # Calcul dynamique du total du devis selon les lignes cochées
                 lignes = list_lignes_devis(d["id"])
                 total_devis_actuel = sum(l["montant_total"] for l in lignes if l["inclus"] == 1) if lignes else d["montant"]
                 
