@@ -217,6 +217,16 @@ def update_contact_name(contact_id, nouveau_nom):
     conn.close()
 
 
+def update_contact_full(contact_id, nom_entreprise, telephone, email, siret, adresse):
+    conn = get_conn()
+    conn.execute(
+        "UPDATE contacts SET nom_entreprise=?, telephone=?, email=?, siret=?, adresse=? WHERE id=?",
+        (nom_entreprise, telephone, email, siret, adresse, contact_id)
+    )
+    conn.commit()
+    conn.close()
+
+
 def get_project_categories(project_id):
     defaults = ["Gros œuvre", "Extension", "Cuisine", "Salle de bain", "Électricité", "Plomberie", "Toiture", "Isolation", "Menuiserie", "Peinture / finitions", "Autre"]
     conn = get_conn()
@@ -650,7 +660,6 @@ with tab_devis:
                     update_devis_inclus(d["id"], inclus_devis)
                     st.rerun()
 
-                # Modification de la catégorie en direct
                 all_cats = get_project_categories(current_pid)
                 current_cat_idx = all_cats.index(d["categorie"]) if d["categorie"] in all_cats else 0
                 
@@ -670,13 +679,11 @@ with tab_devis:
                     update_devis_categorie(d["id"], selected_cat)
                     st.rerun()
 
-                # Formulaire d'édition rapide pour chaque devis (Entreprise & Description)
                 with c1.expander("✏️ Modifier nom / description"):
                     with st.form(key=f"form_edit_meta_{d['id']}"):
                         edit_nom_ent = st.text_input("Nom de l'entreprise", value=d["nom_entreprise"] or "")
                         edit_desc = st.text_input("Description générale", value=d["description"] or "")
-                        if st.form_submit_button("Enregistrer les modifications"):
-                            # Mise à jour du nom de l'entreprise et de la table contacts
+                        if st.form_submit_button("Enregistrer"):
                             if d["contact_id"]:
                                 update_contact_name(d["contact_id"], edit_nom_ent)
                             else:
@@ -685,10 +692,8 @@ with tab_devis:
                                 conn.execute("UPDATE devis SET contact_id=? WHERE id=?", (cid, d["id"]))
                                 conn.commit()
                                 conn.close()
-                            
-                            # Mise à jour de la description générale
                             update_devis_description(d["id"], edit_desc)
-                            st.success("Modifications enregistrées !")
+                            st.success("Mis à jour !")
                             st.rerun()
 
                 c1.caption(f"📁 Fichier : {d['pdf_nom'] or 'Aucun'}")
@@ -794,7 +799,7 @@ with tab_devis:
         st.metric("Total cumulé des travaux (selon devis et lignes cochés)", f"HT : {tot_g_ht:,.2f} €  |  TTC : {tot_g_ttc:,.2f} €")
 
 with tab_contacts:
-    st.subheader("Contacts extraits des devis")
+    st.subheader("Gestion des contacts (Entreprise, Tél, Email, SIRET, Adresse)")
     contacts = list_contacts(current_pid)
     if not contacts:
         st.info("Aucun contact.")
@@ -802,8 +807,22 @@ with tab_contacts:
         for c in contacts:
             with st.container(border=True):
                 st.write(f"### 🏢 {c['nom_entreprise']}")
-                st.write(f"**Tél** : {c['telephone']} | **Email** : {c['email']} | **SIRET** : {c['siret']}")
-                st.write(f"**Adresse** : {c['adresse']}")
+                st.write(f"**Tél** : {c['telephone'] or 'Non renseigné'} | **Email** : {c['email'] or 'Non renseigné'} | **SIRET** : {c['siret'] or 'Non renseigné'}")
+                st.write(f"**Adresse** : {c['adresse'] or 'Non renseignée'}")
+                
+                with st.expander(f"✏️ Modifier ce contact ({c['nom_entreprise']})"):
+                    with st.form(key=f"form_edit_contact_{c['id']}"):
+                        n_nom = st.text_input("Nom de l'entreprise", value=c["nom_entreprise"] or "")
+                        col_c1, col_c2, col_c3 = st.columns(3)
+                        n_tel = col_c1.text_input("Tél", value=c["telephone"] or "")
+                        n_email = col_c2.text_input("Email", value=c["email"] or "")
+                        n_siret = col_c3.text_input("SIRET", value=c["siret"] or "")
+                        n_adresse = st.text_area("Adresse", value=c["adresse"] or "")
+                        
+                        if st.form_submit_button("Enregistrer les modifications"):
+                            update_contact_full(c["id"], n_nom, n_tel, n_email, n_siret, n_adresse)
+                            st.success("Contact mis à jour avec succès !")
+                            st.rerun()
 
 with tab_dashboard:
     st.subheader("Synthèse financière (basée sur vos sélections)")
