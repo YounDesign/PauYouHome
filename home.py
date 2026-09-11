@@ -209,6 +209,14 @@ def list_contacts(project_id):
     conn.close()
     return rows
 
+
+def update_contact_name(contact_id, nouveau_nom):
+    conn = get_conn()
+    conn.execute("UPDATE contacts SET nom_entreprise=? WHERE id=?", (nouveau_nom, contact_id))
+    conn.commit()
+    conn.close()
+
+
 def get_project_categories(project_id):
     defaults = ["Gros œuvre", "Extension", "Cuisine", "Salle de bain", "Électricité", "Plomberie", "Toiture", "Isolation", "Menuiserie", "Peinture / finitions", "Autre"]
     conn = get_conn()
@@ -424,6 +432,13 @@ def update_devis_statut(devis_id, statut):
 def update_devis_categorie(devis_id, categorie):
     conn = get_conn()
     conn.execute("UPDATE devis SET categorie=? WHERE id=?", (categorie, devis_id))
+    conn.commit()
+    conn.close()
+
+
+def update_devis_description(devis_id, description):
+    conn = get_conn()
+    conn.execute("UPDATE devis SET description=? WHERE id=?", (description, devis_id))
     conn.commit()
     conn.close()
 
@@ -655,7 +670,26 @@ with tab_devis:
                     update_devis_categorie(d["id"], selected_cat)
                     st.rerun()
 
-                c1.write(f"🏢 **{d['nom_entreprise']}** \n\n*({d['pdf_nom'] or 'Sans fichier'})*")
+                # Modification du nom de l'entreprise en direct
+                nouveau_nom_entreprise = c1.text_input("Nom entreprise", value=d["nom_entreprise"] or "", key=f"input_nom_ent_{d['id']}")
+                if nouveau_nom_entreprise != (d["nom_entreprise"] or ""):
+                    if d["contact_id"]:
+                        update_contact_name(d["contact_id"], nouveau_nom_entreprise)
+                    else:
+                        cid = save_or_get_contact(current_pid, nouveau_nom_entreprise, "", "", "", "")
+                        conn = get_conn()
+                        conn.execute("UPDATE devis SET contact_id=? WHERE id=?", (cid, d["id"]))
+                        conn.commit()
+                        conn.close()
+                    st.rerun()
+
+                # Modification de la description générale en direct
+                nouvelle_desc = c1.text_input("Description générale", value=d["description"] or "", key=f"input_desc_{d['id']}")
+                if nouvelle_desc != (d["description"] or ""):
+                    update_devis_description(d["id"], nouvelle_desc)
+                    st.rerun()
+
+                c1.caption(f"📁 Fichier : {d['pdf_nom'] or 'Aucun'}")
                 
                 lignes = list_lignes_devis(d["id"])
                 tot_ht_devis = sum(l["montant_ht"] for l in lignes if l["inclus"] == 1) if lignes else (d["montant_ht"] if d["inclus"]==1 else 0)
