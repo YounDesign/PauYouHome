@@ -758,51 +758,65 @@ with tab_contacts:
 
 with tab_dashboard:
     st.subheader(f"📊 Dashboard Financier Complet : {project['nom']}")
-    
-    # Récupération des valeurs
+
+    # ---------- Valeurs réelles (celles enregistrées en base) ----------
     prix_achat = float(project["prix_achat"] or 0)
     taux_notaire = float(project["taux_notaire"] or 7.5)
     frais_notaire = prix_achat * taux_notaire / 100
-    
     tot_travaux_ht, tot_travaux_ttc = get_total_travaux_valides(current_pid)
-    
-    # Coût total du projet avant emprunt (acquisition + notaire + travaux TTC)
     investissement_total = prix_achat + frais_notaire + tot_travaux_ttc
-    
-    apport = float(financement["apport"] or 0)
-    montant_emprunt = max(0.0, investissement_total - apport)
-    
-    duree_ans = int(financement["duree_annees"] or 20)
-    nb_mois = duree_ans * 12
-    taux_annuel = float(financement["taux_interet"] or 3.5) / 100.0
-    taux_assurance_annuel = float(financement["taux_assurance"] or 0.34) / 100.0
-    
-    # Calcul des mensualités et coûts du crédit
-    if taux_annuel > 0:
-        taux_mensuel = taux_annuel / 12.0
-        mensualite_hc = montant_emprunt * (taux_mensuel * (1 + taux_mensuel)**nb_mois) / ((1 + taux_mensuel)**nb_mois - 1)
-    else:
-        mensualite_hc = montant_emprunt / nb_mois if nb_mois > 0 else 0
-        
-    total_interets = (mensualite_hc * nb_mois) - montant_emprunt if montant_emprunt > 0 else 0
-    assurance_mensuelle = (montant_emprunt * taux_assurance_annuel) / 12.0
-    total_assurance = assurance_mensuelle * nb_mois
-    
-    mensualite_totale = mensualite_hc + assurance_mensuelle
-    cout_total_credit = total_interets + total_assurance
-    cout_global_projet = investissement_total + cout_total_credit
 
-    # Affichage des métriques clés
+    apport = float(financement["apport"] or 0)
+    duree_ans = int(financement["duree_annees"] or 20)
+    taux_interet = float(financement["taux_interet"] or 3.5)
+    taux_assurance = float(financement["taux_assurance"] or 0.34)
+
+    reel = calculer_financement(investissement_total, apport, duree_ans, taux_interet, taux_assurance)
+
+    # ---------- Métriques principales (valeurs réelles) ----------
     col_m1, col_m2, col_m3, col_m4 = st.columns(4)
     col_m1.metric("Prix d'achat", f"{prix_achat:,.2f} €")
     col_m2.metric("Frais de notaire", f"{frais_notaire:,.2f} €")
     col_m3.metric("Travaux (TTC sélectionnés)", f"{tot_travaux_ttc:,.2f} €")
-    col_m4.metric("Coût Global du Projet", f"{cout_global_projet:,.2f} €", help="Achat + Notaire + Travaux + Intérêts + Assurance")
+    col_m4.metric("Coût Global du Projet", f"{reel['cout_global_projet']:,.2f} €", help="Achat + Notaire + Travaux + Intérêts + Assurance")
 
     st.divider()
-    
+
+    # ---------- Détail du calcul ----------
+    with st.expander("🧮 Détail du calcul", expanded=False):
+        st.markdown(f"""
+**1. Coût d'acquisition**
+- Prix d'achat : {prix_achat:,.2f} €
+- Frais de notaire ({taux_notaire}%) : {prix_achat:,.2f} € × {taux_notaire}% = **{frais_notaire:,.2f} €**
+- Travaux TTC sélectionnés : **{tot_travaux_ttc:,.2f} €** (HT : {tot_travaux_ht:,.2f} €)
+- **Investissement total** = {prix_achat:,.2f} + {frais_notaire:,.2f} + {tot_travaux_ttc:,.2f} = **{investissement_total:,.2f} €**
+
+**2. Financement**
+- Apport personnel : {apport:,.2f} €
+- Montant emprunté = {investissement_total:,.2f} − {apport:,.2f} = **{reel['montant_emprunt']:,.2f} €**
+- Durée : {duree_ans} ans ({reel['nb_mois']} mois)
+- Taux d'intérêt annuel : {taux_interet}% → mensuel ≈ {taux_interet/12:.4f}%
+- Taux d'assurance annuel : {taux_assurance}%
+
+**3. Mensualités**
+- Mensualité hors assurance (formule amortissement) : **{reel['mensualite_hc']:,.2f} €/mois**
+- Assurance mensuelle = {reel['montant_emprunt']:,.2f} € × {taux_assurance}% ÷ 12 = **{reel['assurance_mensuelle']:,.2f} €/mois**
+- **Mensualité totale** = {reel['mensualite_hc']:,.2f} + {reel['assurance_mensuelle']:,.2f} = **{reel['mensualite_totale']:,.2f} €/mois**
+
+**4. Coût total du crédit**
+- Total des intérêts = (mensualité hors assurance × {reel['nb_mois']} mois) − montant emprunté = **{reel['total_interets']:,.2f} €**
+- Total de l'assurance = {reel['assurance_mensuelle']:,.2f} € × {reel['nb_mois']} mois = **{reel['total_assurance']:,.2f} €**
+- **Coût total du crédit** = {reel['total_interets']:,.2f} + {reel['total_assurance']:,.2f} = **{reel['cout_total_credit']:,.2f} €**
+
+**5. Coût global du projet**
+- = Investissement total + Coût total du crédit
+- = {investissement_total:,.2f} € + {reel['cout_total_credit']:,.2f} € = **{reel['cout_global_projet']:,.2f} €**
+        """)
+
+    st.divider()
+
     col_d1, col_d2 = st.columns(2)
-    
+
     with col_d1:
         st.markdown("### 👥 Emprunteurs & Salaires")
         e1_nom = financement["emprunteur_1_nom"] or "Emprunteur 1"
@@ -810,26 +824,119 @@ with tab_dashboard:
         e2_nom = financement["emprunteur_2_nom"] or "Emprunteur 2"
         e2_sal = float(financement["emprunteur_2_salaire"] or 0)
         total_salaires = e1_sal + e2_sal
-        
+
         st.write(f"- **{e1_nom}** : {e1_sal:,.2f} € / mois")
         if e2_sal > 0 or e2_nom != "Emprunteur 2":
             st.write(f"- **{e2_nom}** : {e2_sal:,.2f} € / mois")
             st.write(f"- **Total revenus du foyer** : **{total_salaires:,.2f} € / mois**")
             if total_salaires > 0:
-                taux_endettement = (mensualite_totale / total_salaires) * 100
-                st.write(f"- **Taux d'endettement estimé** : **{taux_endettement:.1f}%** (Mensualité : {mensualite_totale:,.2f} €/mois)")
+                taux_endettement = (reel['mensualite_totale'] / total_salaires) * 100
+                st.write(f"- **Taux d'endettement estimé** : **{taux_endettement:.1f}%** (Mensualité : {reel['mensualite_totale']:,.2f} €/mois)")
         else:
             if e1_sal > 0:
-                taux_endettement = (mensualite_totale / e1_sal) * 100
-                st.write(f"- **Taux d'endettement estimé** : **{taux_endettement:.1f}%** (Mensualité : {mensualite_totale:,.2f} €/mois)")
+                taux_endettement = (reel['mensualite_totale'] / e1_sal) * 100
+                st.write(f"- **Taux d'endettement estimé** : **{taux_endettement:.1f}%** (Mensualité : {reel['mensualite_totale']:,.2f} €/mois)")
 
     with col_d2:
         st.markdown("### 🏦 Détail du Financement & Prêt")
         st.write(f"- **Investissement total (hors crédit)** : {investissement_total:,.2f} €")
         st.write(f"- **Apport personnel** : {apport:,.2f} €")
-        st.write(f"- **Montant emprunté** : {montant_emprunt:,.2f} €")
-        st.write(f"- **Durée du prêt** : {duree_ans} ans ({nb_mois} mois)")
-        st.write(f"- **Taux d'intérêt** : {financement['taux_interet']}% | **Assurance** : {financement['taux_assurance']}%")
-        st.write(f"- **Coût total des intérêts** : {total_interets:,.2f} €")
-        st.write(f"- **Coût total de l'assurance** : {total_assurance:,.2f} €")
-        st.write(f"- **Coût total du crédit** : **{cout_total_credit:,.2f} €**")
+        st.write(f"- **Montant emprunté** : {reel['montant_emprunt']:,.2f} €")
+        st.write(f"- **Durée du prêt** : {duree_ans} ans ({reel['nb_mois']} mois)")
+        st.write(f"- **Taux d'intérêt** : {taux_interet}% | **Assurance** : {taux_assurance}%")
+        st.write(f"- **Coût total des intérêts** : {reel['total_interets']:,.2f} €")
+        st.write(f"- **Coût total de l'assurance** : {reel['total_assurance']:,.2f} €")
+        st.write(f"- **Coût total du crédit** : **{reel['cout_total_credit']:,.2f} €**")
+
+    st.divider()
+
+    # ---------- Simulation ----------
+    st.markdown("## 🎛️ Simulation \"Et si ?\"")
+    st.caption("Ajuste les curseurs pour simuler l'impact d'un changement, sans modifier les données enregistrées.")
+
+    activer_sim = st.checkbox("Activer la simulation", key=f"sim_actif_{current_pid}")
+
+    if activer_sim:
+        col_reset, _ = st.columns([1, 4])
+        if col_reset.button("🔄 Réinitialiser la simulation"):
+            for k in list(st.session_state.keys()):
+                if k.startswith(f"sim_slider_{current_pid}") or k.startswith(f"sim_cat_{current_pid}"):
+                    del st.session_state[k]
+            st.rerun()
+
+        st.markdown("#### Hypothèses générales")
+        col_s1, col_s2, col_s3 = st.columns(3)
+        with col_s1:
+            prix_achat_sim = st.slider(
+                "Prix d'achat simulé (€)", 0, int(max(prix_achat * 2, 100000)),
+                int(prix_achat), step=1000, key=f"sim_slider_{current_pid}_prix"
+            )
+            taux_notaire_sim = st.slider(
+                "Frais de notaire (%)", 0.0, 15.0, taux_notaire, step=0.1,
+                key=f"sim_slider_{current_pid}_notaire"
+            )
+        with col_s2:
+            apport_sim = st.slider(
+                "Apport personnel (€)", 0, int(max(apport * 2, 50000)),
+                int(apport), step=1000, key=f"sim_slider_{current_pid}_apport"
+            )
+            duree_sim = st.slider(
+                "Durée du prêt (années)", 1, 35, duree_ans, step=1,
+                key=f"sim_slider_{current_pid}_duree"
+            )
+        with col_s3:
+            taux_interet_sim = st.slider(
+                "Taux d'intérêt (%)", 0.0, 10.0, taux_interet, step=0.05,
+                key=f"sim_slider_{current_pid}_interet"
+            )
+            taux_assurance_sim = st.slider(
+                "Taux assurance (%)", 0.0, 3.0, taux_assurance, step=0.01,
+                key=f"sim_slider_{current_pid}_assurance"
+            )
+
+        st.markdown("#### Ajustement par catégorie de travaux")
+        travaux_par_cat = get_travaux_par_categorie(current_pid)
+        tot_travaux_ttc_sim = 0.0
+        if not travaux_par_cat:
+            st.caption("Aucun devis actif pour le moment.")
+        else:
+            for cat, vals in travaux_par_cat.items():
+                mult = st.slider(
+                    f"{cat} — {vals['ttc']:,.0f} € TTC réel",
+                    0, 200, 100, step=5,
+                    key=f"sim_cat_{current_pid}_{cat}",
+                    help="100% = valeur actuelle. Déplace pour simuler une hausse ou une baisse du budget de cette catégorie."
+                )
+                tot_travaux_ttc_sim += vals["ttc"] * mult / 100.0
+
+        frais_notaire_sim = prix_achat_sim * taux_notaire_sim / 100
+        investissement_total_sim = prix_achat_sim + frais_notaire_sim + tot_travaux_ttc_sim
+        sim = calculer_financement(investissement_total_sim, apport_sim, duree_sim, taux_interet_sim, taux_assurance_sim)
+
+        st.markdown("#### 📈 Résultat de la simulation")
+        col_r1, col_r2, col_r3, col_r4 = st.columns(4)
+        col_r1.metric("Investissement total", f"{investissement_total_sim:,.2f} €", delta=f"{investissement_total_sim - investissement_total:,.2f} €")
+        col_r2.metric("Montant emprunté", f"{sim['montant_emprunt']:,.2f} €", delta=f"{sim['montant_emprunt'] - reel['montant_emprunt']:,.2f} €")
+        col_r3.metric("Mensualité totale", f"{sim['mensualite_totale']:,.2f} €", delta=f"{sim['mensualite_totale'] - reel['mensualite_totale']:,.2f} €")
+        col_r4.metric("Coût global du projet", f"{sim['cout_global_projet']:,.2f} €", delta=f"{sim['cout_global_projet'] - reel['cout_global_projet']:,.2f} €")
+
+        total_salaires_sim = total_salaires if 'total_salaires' in dir() else (e1_sal + e2_sal)
+        if total_salaires_sim > 0:
+            taux_endettement_sim = (sim['mensualite_totale'] / total_salaires_sim) * 100
+            st.write(f"- **Taux d'endettement simulé** : **{taux_endettement_sim:.1f}%** (vs {taux_endettement:.1f}% réel)")
+
+        with st.expander("🧮 Détail du calcul simulé"):
+            st.markdown(f"""
+- Prix d'achat simulé : {prix_achat_sim:,.2f} €
+- Frais de notaire simulés : {frais_notaire_sim:,.2f} €
+- Travaux TTC simulés : {tot_travaux_ttc_sim:,.2f} €
+- **Investissement total simulé** = {investissement_total_sim:,.2f} €
+- Apport : {apport_sim:,.2f} € → Emprunt : {sim['montant_emprunt']:,.2f} €
+- Mensualité hors assurance : {sim['mensualite_hc']:,.2f} €/mois
+- Assurance mensuelle : {sim['assurance_mensuelle']:,.2f} €/mois
+- **Mensualité totale** : {sim['mensualite_totale']:,.2f} €/mois
+- Total intérêts : {sim['total_interets']:,.2f} € | Total assurance : {sim['total_assurance']:,.2f} €
+- **Coût global du projet simulé** : {sim['cout_global_projet']:,.2f} €
+            """)
+    else:
+        st.caption("Coche la case ci-dessus pour activer les curseurs de simulation.")
