@@ -51,7 +51,9 @@ def init_db():
         contact_id INTEGER,
         categorie TEXT,
         description TEXT,
-        montant REAL,
+        montant_ht REAL DEFAULT 0,
+        montant_ttc REAL DEFAULT 0,
+        taux_tva REAL DEFAULT 20.0,
         statut TEXT,
         valeur_ajoutee REAL DEFAULT 0,
         pdf_nom TEXT,
@@ -63,8 +65,11 @@ def init_db():
         devis_id INTEGER,
         designation TEXT,
         quantite REAL,
-        prix_unitaire REAL,
-        montant_total REAL,
+        prix_unitaire_ht REAL DEFAULT 0,
+        prix_unitaire_ttc REAL DEFAULT 0,
+        montant_ht REAL DEFAULT 0,
+        montant_ttc REAL DEFAULT 0,
+        taux_tva REAL DEFAULT 20.0,
         inclus INTEGER DEFAULT 1
     )""")
     c.execute("""CREATE TABLE IF NOT EXISTS financement (
@@ -95,6 +100,24 @@ def init_db():
         c.execute("ALTER TABLE devis ADD COLUMN pdf_nom TEXT")
     if "pdf_data" not in existing_columns:
         c.execute("ALTER TABLE devis ADD COLUMN pdf_data BLOB")
+    if "montant_ht" not in existing_columns:
+        c.execute("ALTER TABLE devis ADD COLUMN montant_ht REAL DEFAULT 0")
+    if "montant_ttc" not in existing_columns:
+        c.execute("ALTER TABLE devis ADD COLUMN montant_ttc REAL DEFAULT 0")
+    if "taux_tva" not in existing_columns:
+        c.execute("ALTER TABLE devis ADD COLUMN taux_tva REAL DEFAULT 20.0")
+
+    existing_lignes_cols = [col["name"] for col in c.execute("PRAGMA table_info(devis_lignes)").fetchall()]
+    if "prix_unitaire_ht" not in existing_lignes_cols:
+        c.execute("ALTER TABLE devis_lignes ADD COLUMN prix_unitaire_ht REAL DEFAULT 0")
+    if "prix_unitaire_ttc" not in existing_lignes_cols:
+        c.execute("ALTER TABLE devis_lignes ADD COLUMN prix_unitaire_ttc REAL DEFAULT 0")
+    if "montant_ht" not in existing_lignes_cols:
+        c.execute("ALTER TABLE devis_lignes ADD COLUMN montant_ht REAL DEFAULT 0")
+    if "montant_ttc" not in existing_lignes_cols:
+        c.execute("ALTER TABLE devis_lignes ADD COLUMN montant_ttc REAL DEFAULT 0")
+    if "taux_tva" not in existing_lignes_cols:
+        c.execute("ALTER TABLE devis_lignes ADD COLUMN taux_tva REAL DEFAULT 20.0")
 
     conn.commit()
     conn.close()
@@ -190,7 +213,9 @@ def list_contacts(project_id):
 def parse_file_data(file_bytes, file_name):
     text_all = ""
     lignes = []
-    amount = None
+    amount_ttc = None
+    amount_ht = None
+    taux_tva_detecte = 20.0
     contact_info = {"nom": "Artisan / Fournisseur", "adresse": "", "tel": "", "email": "", "siret": ""}
 
     if file_name.endswith('.pdf') and PDF_OK:
@@ -212,8 +237,9 @@ def parse_file_data(file_bytes, file_name):
                                             lignes.append({
                                                 "designation": desc,
                                                 "quantite": 1.0,
-                                                "prix_unitaire": val_prix,
-                                                "montant_total": val_prix
+                                                "prix_unitaire_ttc": val_prix,
+                                                "montant_ttc": val_prix,
+                                                "taux_tva": 20.0
                                             })
                                 except ValueError:
                                     pass
@@ -239,8 +265,9 @@ def parse_file_data(file_bytes, file_name):
                     lignes.append({
                         "designation": desc,
                         "quantite": 1.0,
-                        "prix_unitaire": prix,
-                        "montant_total": prix
+                        "prix_unitaire_ttc": prix,
+                        "montant_ttc": prix,
+                        "taux_tva": 20.0
                     })
         except Exception:
             pass
@@ -260,24 +287,52 @@ def parse_file_data(file_bytes, file_name):
                             lignes.append({
                                 "designation": designation,
                                 "quantite": 1.0,
-                                "prix_unitaire": p_val,
-                                "montant_total": p_val
+                                "prix_unitaire_ttc": p_val,
+                                "montant_ttc": p_val,
+                                "taux_tva": 20.0
                             })
                 except ValueError:
                     pass
 
-    candidates = re.findall(
+    # Détection TVA
+    match_tva = re.search(r"tva\D{0,5}(20|10|5\.5|5|2\.1|0)[,%]?", text_all, re.IGNORECASE)
+    if match_tva:
+        t_val = match_tva.group(1).replace(",", ".")
+        try:
+            taux_tva_detecte = float(t_val)
+            if taux_tva_detecte == 5:
+                taux_tva_detecte = 5.5
+        except ValueError:
+            pass
+
+    candidates_ttc = re.findall(
         r"(?:total\s*t\.?t\.?c\.?|net\s*à\s*payer)\D{0,15}([\d\s]{1,3}(?:[\d\s]{3})*[.,]\d{2})",
         text_all, flags=re.IGNORECASE,
     )
-    if not candidates:
-        candidates = re.findall(r"([\d\s]{1,3}(?:[\d\s]{3})*[.,]\d{2})\s*€", text_all)
-    if candidates:
-        raw = candidates[-1].replace(" ", "").replace("\xa0", "").replace(",", ".")
+    if not candidates_ttc:
+        candidates_ttc = re.findall(r"([\d\s]{1,3}(?:[\d\s]{3})*[.,]\d{2})\s*€", text_all)
+    if candidates_ttc:
+        raw = candidates_ttc[-1].replace(" ", "").replace("\xa0", "").replace(",", ".")
         try:
-            amount = float(raw)
+            amount_ttc = float(raw)
         except ValueError:
-            amount = None
+            amount_ttc = None
+
+    candidates_ht = re.findall(
+        r"total\s*h\.?t\.?\D{0,15}([\d\s]{1,3}(?:[\d\s]{3})*[.,]\d{2})",
+        text_all, flags=re.IGNORECASE,
+    )
+    if candidates_ht:
+        raw_ht = candidates_ht[-1].replace(" ", "").replace("\xa0", "").replace(",", ".")
+        try:
+            amount_ht = float(raw_ht)
+        except ValueError:
+            amount_ht = None
+
+    if amount_ttc and not amount_ht:
+        amount_ht = amount_ttc / (1 + taux_tva_detecte / 100.0)
+    elif amount_ht and not amount_ttc:
+        amount_ttc = amount_ht * (1 + taux_tva_detecte / 100.0)
 
     match_tel = re.search(r"(?:tel|tél|t[ée]l\s*[:\.]?)\s*([\d\s\.\-\/\+]{8,})", text_all, re.IGNORECASE)
     if match_tel:
@@ -295,28 +350,34 @@ def parse_file_data(file_bytes, file_name):
     if match_nom:
         contact_info["nom"] = match_nom.group(1).strip()
 
-    return amount, text_all, lignes, contact_info
+    # Mettre à jour les lignes avec le taux détecté
+    for l in lignes:
+        l["taux_tva"] = taux_tva_detecte
+        l["prix_unitaire_ht"] = l["prix_unitaire_ttc"] / (1 + taux_tva_detecte / 100.0)
+        l["montant_ht"] = l["montant_ttc"] / (1 + taux_tva_detecte / 100.0)
+
+    return amount_ht, amount_ttc, taux_tva_detecte, text_all, lignes, contact_info
 
 # ----------------------------------------------------------------------------
 # HELPERS DEVIS & LIGNES
 # ----------------------------------------------------------------------------
 
-def add_devis(project_id, contact_id, categorie, description, montant, statut, valeur_ajoutee, pdf_nom, pdf_data, lignes=None):
+def add_devis(project_id, contact_id, categorie, description, montant_ht, montant_ttc, taux_tva, statut, valeur_ajoutee, pdf_nom, pdf_data, lignes=None):
     conn = get_conn()
     cursor = conn.cursor()
     cursor.execute(
-        """INSERT INTO devis (project_id, contact_id, categorie, description, montant, statut,
-           valeur_ajoutee, pdf_nom, pdf_data, date_ajout) VALUES (?,?,?,?,?,?,?,?,?,?)""",
-        (project_id, contact_id, categorie, description, montant, statut, valeur_ajoutee,
+        """INSERT INTO devis (project_id, contact_id, categorie, description, montant_ht, montant_ttc, taux_tva, statut,
+           valeur_ajoutee, pdf_nom, pdf_data, date_ajout) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (project_id, contact_id, categorie, description, montant_ht, montant_ttc, taux_tva, statut, valeur_ajoutee,
          pdf_nom, pdf_data, date.today().isoformat()),
     )
     devis_id = cursor.lastrowid
     if lignes:
         for l in lignes:
             cursor.execute(
-                """INSERT INTO devis_lignes (devis_id, designation, quantite, prix_unitaire, montant_total, inclus)
-                   VALUES (?, ?, ?, ?, ?, 1)""",
-                (devis_id, l["designation"], l["quantite"], l["prix_unitaire"], l["montant_total"])
+                """INSERT INTO devis_lignes (devis_id, designation, quantite, prix_unitaire_ht, prix_unitaire_ttc, montant_ht, montant_ttc, taux_tva, inclus)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)""",
+                (devis_id, l["designation"], l["quantite"], l["prix_unitaire_ht"], l["prix_unitaire_ttc"], l["montant_ht"], l["montant_ttc"], l["taux_tva"])
             )
     conn.commit()
     conn.close()
@@ -362,13 +423,22 @@ def update_ligne_inclus(ligne_id, inclus):
     conn.close()
 
 
-def add_ligne_devis(devis_id, designation, quantite, prix_unitaire):
+def add_ligne_devis(devis_id, designation, quantite, prix_saisi, mode_saisi, taux_tva):
     conn = get_conn()
-    montant_total = quantite * prix_unitaire
+    if mode_saisi == "HT":
+        prix_ht = prix_saisi
+        prix_ttc = prix_saisi * (1 + taux_tva / 100.0)
+    else:
+        prix_ttc = prix_saisi
+        prix_ht = prix_saisi / (1 + taux_tva / 100.0)
+
+    montant_ht = quantite * prix_ht
+    montant_ttc = quantite * prix_ttc
+
     conn.execute(
-        """INSERT INTO devis_lignes (devis_id, designation, quantite, prix_unitaire, montant_total, inclus)
-           VALUES (?, ?, ?, ?, ?, 1)""",
-        (devis_id, designation, quantite, prix_unitaire, montant_total)
+        """INSERT INTO devis_lignes (devis_id, designation, quantite, prix_unitaire_ht, prix_unitaire_ttc, montant_ht, montant_ttc, taux_tva, inclus)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)""",
+        (devis_id, designation, quantite, prix_ht, prix_ttc, montant_ht, montant_ttc, taux_tva)
     )
     conn.commit()
     conn.close()
@@ -383,16 +453,19 @@ def delete_ligne_devis(ligne_id):
 
 def get_total_travaux_valides(pid):
     devis_rows = list_devis(pid)
-    total = 0.0
+    total_ht = 0.0
+    total_ttc = 0.0
     for d in devis_rows:
         lignes = list_lignes_devis(d["id"])
         if lignes:
             for l in lignes:
                 if l["inclus"] == 1:
-                    total += l["montant_total"] or 0
+                    total_ht += l["montant_ht"] or 0
+                    total_ttc += l["montant_ttc"] or 0
         else:
-            total += d["montant"] or 0
-    return total
+            total_ht += d["montant_ht"] or 0
+            total_ttc += d["montant_ttc"] or 0
+    return total_ht, total_ttc
 
 # ----------------------------------------------------------------------------
 # INTERFACE PRINCIPALE
@@ -448,21 +521,23 @@ with tab_achat:
         st.rerun()
 
 with tab_devis:
-    st.subheader("Importation de devis et gestion des lignes")
+    st.subheader("Importation de devis et gestion HT / TTC")
     uploaded_file = st.file_uploader("Importer un devis (PDF ou Excel)", type=["pdf", "xlsx", "xls"])
     
-    montant_detecte = None
+    montant_ht_detecte = None
+    montant_ttc_detecte = None
+    taux_tva_detecte = 20.0
     lignes_extraites = []
     contact_detecte = {}
 
     if uploaded_file is not None:
-        montant_detecte, _, lignes_extraites, contact_detecte = parse_file_data(uploaded_file.getvalue(), uploaded_file.name)
-        if montant_detecte:
-            st.info(f"Montant TTC détecté : {montant_detecte:,.2f} € | Entreprise : {contact_detecte.get('nom')}")
+        montant_ht_detecte, montant_ttc_detecte, taux_tva_detecte, _, lignes_extraites, contact_detecte = parse_file_data(uploaded_file.getvalue(), uploaded_file.name)
+        if montant_ttc_detecte:
+            st.info(f"Détecté - HT : {montant_ht_detecte:,.2f} € | TVA : {taux_tva_detecte}% | TTC : {montant_ttc_detecte:,.2f} €")
         if lignes_extraites:
             st.success(f"🔍 {len(lignes_extraites)} ligne(s) détectée(s) automatiquement.")
         else:
-            st.warning("⚠️ Aucune ligne détectée automatiquement. Vous pourrez les ajouter manuellement en affichant le PDF du devis.")
+            st.warning("⚠️ Aucune ligne détectée automatiquement. Ajoutez-les manuellement via l'affichage du PDF ci-dessous.")
 
     with st.form("form_devis", clear_on_submit=True):
         col1, col2 = st.columns(2)
@@ -473,24 +548,44 @@ with tab_devis:
         with col2:
             statut = st.selectbox("Statut", ["Devis reçu", "Devis signé", "En cours", "Terminé / payé"])
             valeur_ajoutee = st.number_input("Plus-value estimée (€)", min_value=0.0, step=500.0)
-            tel_artisan = st.text_input("Téléphone", value=contact_detecte.get("tel", ""))
-            email_artisan = st.text_input("Email", value=contact_detecte.get("email", ""))
+            taux_tva_global = st.selectbox("Taux de TVA par défaut", [20.0, 10.0, 5.5, 0.0], index=[20.0, 10.0, 5.5, 0.0].index(taux_tva_detecte) if taux_tva_detecte in [20.0, 10.0, 5.5, 0.0] else 0)
 
-        montant_saisi = st.number_input("Montant TTC global (€)", min_value=0.0, step=100.0, value=float(montant_detecte) if montant_detecte else 0.0)
+        col_m1, col_m2 = st.columns(2)
+        montant_ht_saisi = col_m1.number_input("Montant HT global (€)", min_value=0.0, step=100.0, value=float(montant_ht_detecte) if montant_ht_detecte else 0.0)
+        montant_ttc_saisi = col_m2.number_input("Montant TTC global (€)", min_value=0.0, step=100.0, value=float(montant_ttc_detecte) if montant_ttc_detecte else 0.0)
 
         if st.form_submit_button("Enregistrer le devis"):
             pdf_bytes = uploaded_file.getvalue() if uploaded_file is not None else None
             pdf_nom = uploaded_file.name if uploaded_file is not None else None
             
-            cid = save_or_get_contact(current_pid, nom_artisan, contact_detecte.get("adresse", ""), tel_artisan, email_artisan, contact_detecte.get("siret", ""))
-            lignes_a_sauver = lignes_extraites if lignes_extraites else [{"designation": description or "Global", "quantite": 1.0, "prix_unitaire": montant_saisi, "montant_total": montant_saisi}]
+            # Recalculer HT/TTC cohérents
+            if montant_ttc_saisi > 0 and montant_ht_saisi == 0:
+                montant_ht_saisi = montant_ttc_saisi / (1 + taux_tva_global / 100.0)
+            elif montant_ht_saisi > 0 and montant_ttc_saisi == 0:
+                montant_ttc_saisi = montant_ht_saisi * (1 + taux_tva_global / 100.0)
+
+            cid = save_or_get_contact(current_pid, nom_artisan, contact_detecte.get("adresse", ""), contact_detecte.get("tel", ""), contact_detecte.get("email", ""), contact_detecte.get("siret", ""))
             
-            add_devis(current_pid, cid, categorie, description, montant_saisi, statut, valeur_ajoutee, pdf_nom, pdf_bytes, lignes_a_sauver)
-            st.success("Enregistré avec succès dans la base de données.")
+            lignes_a_sauver = []
+            if lignes_extraites:
+                lignes_a_sauver = lignes_extraites
+            else:
+                lignes_a_sauver = [{
+                    "designation": description or "Global", 
+                    "quantite": 1.0, 
+                    "prix_unitaire_ht": montant_ht_saisi, 
+                    "prix_unitaire_ttc": montant_ttc_saisi,
+                    "montant_ht": montant_ht_saisi,
+                    "montant_ttc": montant_ttc_saisi,
+                    "taux_tva": taux_tva_global
+                }]
+            
+            add_devis(current_pid, cid, categorie, description, montant_ht_saisi, montant_ttc_saisi, taux_tva_global, statut, valeur_ajoutee, pdf_nom, pdf_bytes, lignes_a_sauver)
+            st.success("Enregistré avec succès !")
             st.rerun()
 
     st.divider()
-    st.subheader("Liste des devis (Affichage PDF côte à côte)")
+    st.subheader("Liste des devis (Affichage PDF côte à côte & Gestion HT/TTC)")
     devis_rows = list_devis(current_pid)
     
     if not devis_rows:
@@ -502,9 +597,10 @@ with tab_devis:
                 c1.write(f"**{d['categorie']}** — {d['nom_entreprise']} *({d['pdf_nom'] or 'Sans fichier'})*")
                 
                 lignes = list_lignes_devis(d["id"])
-                total_devis_actuel = sum(l["montant_total"] for l in lignes if l["inclus"] == 1) if lignes else d["montant"]
+                tot_ht = sum(l["montant_ht"] for l in lignes if l["inclus"] == 1) if lignes else d["montant_ht"]
+                tot_ttc = sum(l["montant_ttc"] for l in lignes if l["inclus"] == 1) if lignes else d["montant_ttc"]
                 
-                c2.write(f"Total : {total_devis_actuel:,.2f} €")
+                c2.write(f"HT : **{tot_ht:,.2f} €** | TTC : **{tot_ttc:,.2f} €**")
                 
                 nouveau_statut = c3.selectbox("Statut", ["Devis reçu", "Devis signé", "En cours", "Terminé / payé"], index=["Devis reçu", "Devis signé", "En cours", "Terminé / payé"].index(d["statut"]) if d["statut"] in ["Devis reçu", "Devis signé", "En cours", "Terminé / payé"] else 0, key=f"statut_{d['id']}", label_visibility="collapsed")
                 if nouveau_statut != d["statut"]:
@@ -515,56 +611,65 @@ with tab_devis:
                     delete_devis(d["id"])
                     st.rerun()
 
-                # Bouton pour afficher/masquer le visualiseur PDF côte à côte
                 pdf_key = f"show_pdf_{d['id']}"
                 if pdf_key not in st.session_state:
                     st.session_state[pdf_key] = False
 
-                col_btn1, col_btn2 = st.columns([2, 5])
+                col_btn1, _ = st.columns([2, 5])
                 if d["pdf_data"]:
-                    if col_btn1.button("👁️ Afficher PDF & Saisir", key=f"btn_toggle_{d['id']}"):
+                    if col_btn1.button("👁️ Afficher PDF & Saisir les lignes", key=f"btn_toggle_{d['id']}"):
                         st.session_state[pdf_key] = not st.session_state[pdf_key]
                         st.rerun()
                 else:
-                    col_btn1.caption("Aucun PDF joint")
+                    col_btn1.caption("Aucun PDF joint (Saisie manuelle possible)")
+                    if col_btn1.button("✍️ Saisir les lignes", key=f"btn_toggle_nopdf_{d['id']}"):
+                        st.session_state[pdf_key] = not st.session_state[pdf_key]
+                        st.rerun()
 
-                # MODE CÔTE À CÔTE SI ACTIVÉ
-                if st.session_state[pdf_key] and d["pdf_data"]:
+                if st.session_state[pdf_key]:
                     st.markdown("---")
                     col_pdf, col_form = st.columns(2)
                     
                     with col_pdf:
                         st.markdown("#### 📄 Document original")
-                        base64_pdf = base64.b64encode(d["pdf_data"]).decode('utf-8')
-                        pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="500px" type="application/pdf"></iframe>'
-                        st.markdown(pdf_display, unsafe_allow_html=True)
-                        st.download_button("📥 Télécharger le PDF", data=d["pdf_data"], file_name=d["pdf_nom"] or "devis.pdf", key=f"dl_side_{d['id']}")
+                        if d["pdf_data"]:
+                            base64_pdf = base64.b64encode(d["pdf_data"]).decode('utf-8')
+                            pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="500px" type="application/pdf"></iframe>'
+                            st.markdown(pdf_display, unsafe_allow_html=True)
+                            st.download_button("📥 Télécharger le PDF", data=d["pdf_data"], file_name=d["pdf_nom"] or "devis.pdf", key=f"dl_side_{d['id']}")
+                        else:
+                            st.info("Aucun PDF associé.")
 
                     with col_form:
-                        st.markdown("#### ✍️ Gestion des lignes")
+                        st.markdown("#### ✍️ Gestion des lignes (HT / TTC / TVA)")
                         if lignes:
                             st.markdown("*Lignes actuelles :*")
                             for l in lignes:
-                                cols_l = st.columns([1, 4, 2, 1])
-                                inclus_actuel = cols_l[0].checkbox("Inclure", value=bool(l["inclus"]), key=f"ligne_{l['id']}")
+                                cols_l = st.columns([1, 3, 2, 1, 1])
+                                inclus_actuel = cols_l[0].checkbox("Inc.", value=bool(l["inclus"]), key=f"ligne_{l['id']}")
                                 if inclus_actuel != bool(l["inclus"]):
                                     update_ligne_inclus(l["id"], inclus_actuel)
                                     st.rerun()
                                 cols_l[1].write(l["designation"])
-                                cols_l[2].write(f"{l['montant_total']:,.2f} €")
-                                if cols_l[3].button("❌", key=f"delligne_{l['id']}"):
+                                cols_l[2].write(f"HT:{l['montant_ht']:,.2f}€\nTTC:{l['montant_ttc']:,.2f}€")
+                                cols_l[3].write(f"TVA {l['taux_tva']}%")
+                                if cols_l[4].button("❌", key=f"delligne_{l['id']}"):
                                     delete_ligne_devis(l["id"])
                                     st.rerun()
 
                         with st.form(key=f"form_add_ligne_side_{d['id']}"):
                             st.markdown("**Ajouter une ligne manuellement**")
                             des_manuelle = st.text_input("Désignation", key=f"desc_{d['id']}")
-                            col_q, col_p = st.columns(2)
-                            qte_manuelle = col_q.number_input("Quantité", min_value=0.1, value=1.0, step=1.0, key=f"qte_{d['id']}")
-                            prix_manuelle = col_p.number_input("Prix unitaire (€)", min_value=0.0, step=10.0, key=f"prix_{d['id']}")
+                            
+                            col_q, col_p, col_mode, col_tva = st.columns(4)
+                            qte_manuelle = col_q.number_input("Qté", min_value=0.1, value=1.0, step=1.0, key=f"qte_{d['id']}")
+                            prix_manuelle = col_p.number_input("Prix", min_value=0.0, step=10.0, key=f"prix_{d['id']}")
+                            mode_saisi = col_mode.selectbox("Type", ["TTC", "HT"], key=f"mode_{d['id']}")
+                            taux_ligne = col_tva.selectbox("TVA", [20.0, 10.0, 5.5, 0.0], key=f"tva_{d['id']}")
+                            
                             if st.form_submit_button("Ajouter la ligne"):
                                 if des_manuelle and prix_manuelle > 0:
-                                    add_ligne_devis(d["id"], des_manuelle, qte_manuelle, prix_manuelle)
+                                    add_ligne_devis(d["id"], des_manuelle, qte_manuelle, prix_manuelle, mode_saisi, taux_ligne)
                                     st.success("Ligne ajoutée !")
                                     st.rerun()
                                 else:
@@ -574,20 +679,21 @@ with tab_devis:
                     if lignes:
                         st.markdown("*Lignes du devis :*")
                         for l in lignes:
-                            cols_l = st.columns([1, 5, 2, 1])
-                            inclus_actuel = cols_l[0].checkbox("Inclure", value=bool(l["inclus"]), key=f"ligne_normal_{l['id']}")
+                            cols_l = st.columns([1, 4, 2, 1, 1])
+                            inclus_actuel = cols_l[0].checkbox("Inc.", value=bool(l["inclus"]), key=f"ligne_normal_{l['id']}")
                             if inclus_actuel != bool(l["inclus"]):
                                 update_ligne_inclus(l["id"], inclus_actuel)
                                 st.rerun()
                             cols_l[1].write(l["designation"])
-                            cols_l[2].write(f"{l['montant_total']:,.2f} €")
-                            if cols_l[3].button("❌", key=f"delligne_normal_{l['id']}"):
+                            cols_l[2].write(f"HT: {l['montant_ht']:,.2f} € | TTC: {l['montant_ttc']:,.2f} €")
+                            cols_l[3].write(f"TVA {l['taux_tva']}%")
+                            if cols_l[4].button("❌", key=f"delligne_normal_{l['id']}"):
                                 delete_ligne_devis(l["id"])
                                 st.rerun()
 
-        total_global = get_total_travaux_valides(current_pid)
+        tot_g_ht, tot_g_ttc = get_total_travaux_valides(current_pid)
         st.divider()
-        st.metric("Total cumulé des travaux validés (tous devis confondus)", f"{total_global:,.2f} €")
+        st.metric("Total cumulé des travaux validés", f"HT : {tot_g_ht:,.2f} €  |  TTC : {tot_g_ttc:,.2f} €")
 
 with tab_contacts:
     st.subheader("Contacts extraits des devis")
@@ -603,11 +709,12 @@ with tab_contacts:
 
 with tab_dashboard:
     st.subheader("Synthèse financière")
-    total_travaux = get_total_travaux_valides(current_pid)
+    tot_travaux_ht, tot_travaux_ttc = get_total_travaux_valides(current_pid)
     frais_notaire = project["prix_achat"] * project["taux_notaire"] / 100
-    cout_total = project["prix_achat"] + frais_notaire + total_travaux
+    cout_total_ht = project["prix_achat"] + frais_notaire + tot_travaux_ht
+    cout_total_ttc = project["prix_achat"] + frais_notaire + tot_travaux_ttc
 
     c1, c2, c3 = st.columns(3)
     c1.metric("Prix d'achat", f"{project['prix_achat']:,.2f} €")
     c2.metric("Frais de notaire", f"{frais_notaire:,.2f} €")
-    c3.metric("Coût total projet", f"{cout_total:,.2f} €")
+    c3.metric("Coût total projet", f"HT : {cout_total_ht:,.2f} €\nTTC : {cout_total_ttc:,.2f} €")
