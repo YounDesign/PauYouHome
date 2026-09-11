@@ -3,6 +3,7 @@ import sqlite3
 import pandas as pd
 from datetime import date, datetime
 import re
+import base64
 
 try:
     import pdfplumber
@@ -461,7 +462,7 @@ with tab_devis:
         if lignes_extraites:
             st.success(f"🔍 {len(lignes_extraites)} ligne(s) détectée(s) automatiquement.")
         else:
-            st.warning("⚠️ Aucune ligne détectée automatiquement. Vous pourrez les ajouter manuellement ci-dessous après l'enregistrement.")
+            st.warning("⚠️ Aucune ligne détectée automatiquement. Vous pourrez les ajouter manuellement en affichant le PDF du devis.")
 
     with st.form("form_devis", clear_on_submit=True):
         col1, col2 = st.columns(2)
@@ -489,7 +490,7 @@ with tab_devis:
             st.rerun()
 
     st.divider()
-    st.subheader("Liste des devis et ajout manuel de lignes")
+    st.subheader("Liste des devis (Affichage PDF côte à côte)")
     devis_rows = list_devis(current_pid)
     
     if not devis_rows:
@@ -498,7 +499,7 @@ with tab_devis:
         for d in devis_rows:
             with st.container(border=True):
                 c1, c2, c3, c4 = st.columns([3, 2, 2, 1])
-                c1.write(f"**{d['categorie']}** — {d['nom_entreprise']}")
+                c1.write(f"**{d['categorie']}** — {d['nom_entreprise']} *({d['pdf_nom'] or 'Sans fichier'})*")
                 
                 lignes = list_lignes_devis(d["id"])
                 total_devis_actuel = sum(l["montant_total"] for l in lignes if l["inclus"] == 1) if lignes else d["montant"]
@@ -514,37 +515,75 @@ with tab_devis:
                     delete_devis(d["id"])
                     st.rerun()
 
-                if lignes:
-                    st.markdown("*Lignes du devis :*")
-                    for l in lignes:
-                        cols_l = st.columns([1, 5, 2, 1])
-                        inclus_actuel = cols_l[0].checkbox("Inclure", value=bool(l["inclus"]), key=f"ligne_{l['id']}")
-                        if inclus_actuel != bool(l["inclus"]):
-                            update_ligne_inclus(l["id"], inclus_actuel)
-                            st.rerun()
-                        cols_l[1].write(l["designation"])
-                        cols_l[2].write(f"{l['montant_total']:,.2f} €")
-                        if cols_l[3].button("❌", key=f"delligne_{l['id']}"):
-                            delete_ligne_devis(l["id"])
-                            st.rerun()
+                # Bouton pour afficher/masquer le visualiseur PDF côte à côte
+                pdf_key = f"show_pdf_{d['id']}"
+                if pdf_key not in st.session_state:
+                    st.session_state[pdf_key] = False
 
-                # Formulaire d'ajout manuel d'une ligne pour ce devis
-                with st.expander("➕ Ajouter une ligne manuellement à ce devis"):
-                    with st.form(key=f"form_add_ligne_{d['id']}"):
-                        des_manuelle = st.text_input("Désignation de la ligne")
-                        col_q, col_p = st.columns(2)
-                        qte_manuelle = col_q.number_input("Quantité", min_value=0.1, value=1.0, step=1.0)
-                        prix_manuelle = col_p.number_input("Prix unitaire (€)", min_value=0.0, step=10.0)
-                        if st.form_submit_button("Ajouter cette ligne"):
-                            if des_manuelle and prix_manuelle > 0:
-                                add_ligne_devis(d["id"], des_manuelle, qte_manuelle, prix_manuelle)
-                                st.success("Ligne ajoutée !")
-                                st.rerun()
-                            else:
-                                st.error("Veuillez remplir la désignation et le prix.")
-
+                col_btn1, col_btn2 = st.columns([2, 5])
                 if d["pdf_data"]:
-                    st.download_button("📄 Télécharger original", data=d["pdf_data"], file_name=d["pdf_nom"] or "devis.pdf", key=f"dl_{d['id']}")
+                    if col_btn1.button("👁️ Afficher PDF & Saisir", key=f"btn_toggle_{d['id']}"):
+                        st.session_state[pdf_key] = not st.session_state[pdf_key]
+                        st.rerun()
+                else:
+                    col_btn1.caption("Aucun PDF joint")
+
+                # MODE CÔTE À CÔTE SI ACTIVÉ
+                if st.session_state[pdf_key] and d["pdf_data"]:
+                    st.markdown("---")
+                    col_pdf, col_form = st.columns(2)
+                    
+                    with col_pdf:
+                        st.markdown("#### 📄 Document original")
+                        base64_pdf = base64.b64encode(d["pdf_data"]).decode('utf-8')
+                        pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="500px" type="application/pdf"></iframe>'
+                        st.markdown(pdf_display, unsafe_allow_html=True)
+                        st.download_button("📥 Télécharger le PDF", data=d["pdf_data"], file_name=d["pdf_nom"] or "devis.pdf", key=f"dl_side_{d['id']}")
+
+                    with col_form:
+                        st.markdown("#### ✍️ Gestion des lignes")
+                        if lignes:
+                            st.markdown("*Lignes actuelles :*")
+                            for l in lignes:
+                                cols_l = st.columns([1, 4, 2, 1])
+                                inclus_actuel = cols_l[0].checkbox("Inclure", value=bool(l["inclus"]), key=f"ligne_{l['id']}")
+                                if inclus_actuel != bool(l["inclus"]):
+                                    update_ligne_inclus(l["id"], inclus_actuel)
+                                    st.rerun()
+                                cols_l[1].write(l["designation"])
+                                cols_l[2].write(f"{l['montant_total']:,.2f} €")
+                                if cols_l[3].button("❌", key=f"delligne_{l['id']}"):
+                                    delete_ligne_devis(l["id"])
+                                    st.rerun()
+
+                        with st.form(key=f"form_add_ligne_side_{d['id']}"):
+                            st.markdown("**Ajouter une ligne manuellement**")
+                            des_manuelle = st.text_input("Désignation", key=f"desc_{d['id']}")
+                            col_q, col_p = st.columns(2)
+                            qte_manuelle = col_q.number_input("Quantité", min_value=0.1, value=1.0, step=1.0, key=f"qte_{d['id']}")
+                            prix_manuelle = col_p.number_input("Prix unitaire (€)", min_value=0.0, step=10.0, key=f"prix_{d['id']}")
+                            if st.form_submit_button("Ajouter la ligne"):
+                                if des_manuelle and prix_manuelle > 0:
+                                    add_ligne_devis(d["id"], des_manuelle, qte_manuelle, prix_manuelle)
+                                    st.success("Ligne ajoutée !")
+                                    st.rerun()
+                                else:
+                                    st.error("Renseignez la désignation et le prix.")
+                    st.markdown("---")
+                else:
+                    if lignes:
+                        st.markdown("*Lignes du devis :*")
+                        for l in lignes:
+                            cols_l = st.columns([1, 5, 2, 1])
+                            inclus_actuel = cols_l[0].checkbox("Inclure", value=bool(l["inclus"]), key=f"ligne_normal_{l['id']}")
+                            if inclus_actuel != bool(l["inclus"]):
+                                update_ligne_inclus(l["id"], inclus_actuel)
+                                st.rerun()
+                            cols_l[1].write(l["designation"])
+                            cols_l[2].write(f"{l['montant_total']:,.2f} €")
+                            if cols_l[3].button("❌", key=f"delligne_normal_{l['id']}"):
+                                delete_ligne_devis(l["id"])
+                                st.rerun()
 
         total_global = get_total_travaux_valides(current_pid)
         st.divider()
