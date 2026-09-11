@@ -445,6 +445,56 @@ def get_total_travaux_valides(pid):
                 total_ttc += d["montant_ttc"] or 0
     return total_ht, total_ttc
 
+def get_travaux_par_categorie(pid):
+    devis_rows = list_devis(pid)
+    result = {}
+    for d in devis_rows:
+        if d["inclus"] == 1:
+            cat = d["categorie"] or "Autre"
+            lignes = list_lignes_devis(d["id"])
+            if lignes:
+                ht = sum(l["montant_ht"] for l in lignes if l["inclus"] == 1)
+                ttc = sum(l["montant_ttc"] for l in lignes if l["inclus"] == 1)
+            else:
+                ht = d["montant_ht"] or 0
+                ttc = d["montant_ttc"] or 0
+            if cat not in result:
+                result[cat] = {"ht": 0.0, "ttc": 0.0}
+            result[cat]["ht"] += ht
+            result[cat]["ttc"] += ttc
+    return result
+
+
+def calculer_financement(investissement_total, apport, duree_ans, taux_interet_pct, taux_assurance_pct):
+    montant_emprunt = max(0.0, investissement_total - apport)
+    nb_mois = int(duree_ans * 12)
+    taux_annuel = taux_interet_pct / 100.0
+    taux_assurance_annuel = taux_assurance_pct / 100.0
+
+    if taux_annuel > 0 and nb_mois > 0:
+        taux_mensuel = taux_annuel / 12.0
+        mensualite_hc = montant_emprunt * (taux_mensuel * (1 + taux_mensuel) ** nb_mois) / ((1 + taux_mensuel) ** nb_mois - 1)
+    else:
+        mensualite_hc = montant_emprunt / nb_mois if nb_mois > 0 else 0.0
+
+    total_interets = (mensualite_hc * nb_mois) - montant_emprunt if montant_emprunt > 0 else 0.0
+    assurance_mensuelle = (montant_emprunt * taux_assurance_annuel) / 12.0
+    total_assurance = assurance_mensuelle * nb_mois
+    mensualite_totale = mensualite_hc + assurance_mensuelle
+    cout_total_credit = total_interets + total_assurance
+    cout_global_projet = investissement_total + cout_total_credit
+
+    return {
+        "montant_emprunt": montant_emprunt,
+        "nb_mois": nb_mois,
+        "mensualite_hc": mensualite_hc,
+        "assurance_mensuelle": assurance_mensuelle,
+        "mensualite_totale": mensualite_totale,
+        "total_interets": total_interets,
+        "total_assurance": total_assurance,
+        "cout_total_credit": cout_total_credit,
+        "cout_global_projet": cout_global_projet,
+    }
 # ----------------------------------------------------------------------------
 # INTERFACE PRINCIPALE
 # ----------------------------------------------------------------------------
