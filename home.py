@@ -1209,4 +1209,3 @@ with tab_comparer:
         ])
         fig_cmp = px.bar(df_num, x="Projet", y="Coût total", title="Coût total par projet")
         st.plotly_chart(fig_cmp, use_container_width=True)
-
