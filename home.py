@@ -16,6 +16,8 @@ import pandas as pd
 from datetime import date, datetime
 import re
 import os
+import tempfile
+from pathlib import Path
 import plotly.express as px
 import plotly.graph_objects as go
 
@@ -25,13 +27,31 @@ try:
 except ImportError:
     PDF_OK = False
 
-# Chemin ABSOLU, ancré sur le dossier du script lui-même : la base est toujours
-# la même quel que soit l'endroit depuis lequel tu lances `streamlit run app.py`
-# (terminal, raccourci, autre dossier...). C'est ce qui évite de "perdre" ses
-# données en local : sans ça, un lancement depuis un autre dossier créerait une
-# base vide au lieu de retrouver l'ancienne.
-APP_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(APP_DIR, "immo_projet.db")
+
+def _resolve_db_path():
+    """Choisit un dossier garanti accessible en écriture pour stocker la base.
+
+    Le dossier du script (utilisé dans une version précédente) peut être en
+    lecture seule sur certains hébergements (ex. Streamlit Community Cloud,
+    où le code est monté depuis le dépôt Git). On utilise donc plutôt un
+    dossier dans le profil utilisateur, avec repli sur un dossier temporaire
+    si celui-ci n'est pas accessible non plus.
+    """
+    candidates = [Path.home() / ".immo_app", Path(tempfile.gettempdir()) / "immo_app"]
+    for d in candidates:
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+            test_file = d / ".write_test"
+            test_file.write_text("ok")
+            test_file.unlink()
+            return str(d / "immo_projet.db")
+        except Exception:
+            continue
+    # Dernier recours : dossier courant (comportement d'avant)
+    return "immo_projet.db"
+
+
+DB_PATH = _resolve_db_path()
 
 st.set_page_config(page_title="Gestion Achat Immo & Travaux", layout="wide", page_icon="🏠")
 
@@ -40,8 +60,13 @@ st.set_page_config(page_title="Gestion Achat Immo & Travaux", layout="wide", pag
 # ----------------------------------------------------------------------------
 
 def get_conn():
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=30)
     conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=30000")
+    except sqlite3.OperationalError:
+        pass  # certains systèmes de fichiers réseau ne supportent pas WAL ; on continue sans
     return conn
 
 
@@ -110,7 +135,16 @@ def init_db():
     conn.close()
 
 
-init_db()
+try:
+    init_db()
+except Exception as e:
+    st.error(
+        "❌ Impossible d'initialiser la base de données locale "
+        f"(`{DB_PATH}`). Détail technique : {e}\n\n"
+        "Si le problème persiste sur Streamlit Community Cloud, essaie de redémarrer "
+        "l'application depuis 'Manage app' → 'Reboot app'."
+    )
+    st.stop()
 
 # ----------------------------------------------------------------------------
 # HELPERS PROJETS
@@ -1209,3 +1243,4 @@ with tab_comparer:
         ])
         fig_cmp = px.bar(df_num, x="Projet", y="Coût total", title="Coût total par projet")
         st.plotly_chart(fig_cmp, use_container_width=True)
+
